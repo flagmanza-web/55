@@ -1,0 +1,6 @@
+{
+  "name": "КулинарПро: Кухня и Бизнес",
+  "description": "Приложение для управления кухонным производством, технологическими картами, себестоимостью и бизнесом кулинарного магазина",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

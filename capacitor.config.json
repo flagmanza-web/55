@@ -1,0 +1,8 @@
+{
+  "appId": "ru.kulinarpro.app",
+  "appName": "КулинарПро",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}
