@@ -1,7 +1,6 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 
@@ -13,6 +12,18 @@ const isProduction = process.env.NODE_ENV === 'production';
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '25mb' }));
+
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(204);
+    }
+    next();
+  });
 
   const createGeminiClient = (apiKey: string) =>
     new GoogleGenAI({
@@ -39,6 +50,9 @@ async function startServer() {
 
   const formatGeminiError = (err: any, fallback: string): string => {
     const raw = String(err?.message || '');
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError' || raw.includes('aborted due to timeout')) {
+      return 'Сервер ИИ не успел ответить вовремя. Повторите запрос.';
+    }
     if (isTransientGeminiError(err)) {
       return 'Сервер ИИ временно перегружен. Повторите запрос через несколько секунд.';
     }
@@ -49,12 +63,19 @@ async function startServer() {
   };
 
   const generateWithRetry = async (ai: GoogleGenAI, params: Parameters<GoogleGenAI['models']['generateContent']>[0]) => {
+    const withTimeout = () => ({
+      ...params,
+      config: {
+        ...params.config,
+        abortSignal: AbortSignal.timeout(45000),
+      },
+    });
     try {
-      return await ai.models.generateContent(params);
+      return await ai.models.generateContent(withTimeout());
     } catch (firstErr: any) {
       if (isTransientGeminiError(firstErr)) {
         await new Promise((r) => setTimeout(r, 1200));
-        return await ai.models.generateContent(params);
+        return await ai.models.generateContent(withTimeout());
       }
       throw firstErr;
     }
@@ -307,10 +328,28 @@ async function startServer() {
     }
   });
 
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'API route not found' });
+  });
+
   if (isProduction) {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    const distPath = path.resolve(__dirname, 'dist');
+    app.use(
+      express.static(distPath, {
+        setHeaders: (res, filePath) => {
+          if (
+            filePath.endsWith('sw.js') ||
+            filePath.endsWith('manifest.webmanifest') ||
+            filePath.endsWith('index.html')
+          ) {
+            res.setHeader('Cache-Control', 'no-cache');
+          }
+        },
+      })
+    );
     app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.setHeader('Cache-Control', 'no-cache');
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   } else {
     const disableHmr = process.env.DISABLE_HMR === 'true';
@@ -360,6 +399,7 @@ export function removeStyle(id) {
       });
     }
 
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
@@ -370,9 +410,9 @@ export function removeStyle(id) {
     app.use(vite.middlewares);
   }
 
-  const port = process.env.PORT || 3000;
-  app.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}`);
+  const port = Number(process.env.PORT) || 3000;
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`Server running on http://0.0.0.0:${port}`);
   });
 }
 

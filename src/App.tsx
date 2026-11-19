@@ -46,6 +46,14 @@ import {
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import {
+  DEFAULT_PUBLISHED_SERVER_URL,
+  getEffectiveApiBaseUrl,
+  normalizeServerUrl,
+  parseApiJsonResponse,
+  resolveApiUrl,
+  saveApiBaseUrl,
+} from './lib/api';
 
 // --- TYPES ---
 interface Ingredient {
@@ -446,8 +454,14 @@ export default function App() {
   // AI settings & MANDATORY LONG TERM MEMORY
   const [aiMode, setAiMode] = useState<'gemini' | 'local'>('gemini');
   const [localEndpoint, setLocalEndpoint] = useState<string>(() => {
-    return localStorage.getItem('cp_local_endpoint') || 'http://localhost:11434/api/generate';
+    try {
+      return localStorage.getItem('cp_local_endpoint') || 'http://localhost:11434/api/generate';
+    } catch {
+      return 'http://localhost:11434/api/generate';
+    }
   });
+  const [apiServerUrl, setApiServerUrl] = useState<string>(() => getEffectiveApiBaseUrl());
+  const [isCheckingServer, setIsCheckingServer] = useState(false);
 
   const [aiMemoryNotes, setAiMemoryNotes] = useState<string>(() => {
     return localStorage.getItem('cp_ai_memory') || 'Магазин кулинарии "КулинарПро". Долговременная память: рецепты ТТК рассчитаны точно на 1 кг готовой продукции. Основной упор на горячие блюда, супы, каши, авторскую выпечку, салаты, десерты и напитки. Целевой фудкост 28-32%.';
@@ -485,12 +499,12 @@ export default function App() {
     reader.onload = async () => {
       const base64String = (reader.result as string).split(',')[1];
       try {
-        const res = await fetch('/api/gemini/parse-financial-report', {
+        const res = await fetch(resolveApiUrl('/api/gemini/parse-financial-report'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ imageBase64: base64String, mimeType: file.type })
         });
-        const data = await res.json();
+        const data = await parseApiJsonResponse<{ financials?: any; error?: string }>(res);
         if (data.financials) {
           if (data.financials.revenue && data.financials.revenue > 0) {
             setMonthlyRevenue(data.financials.revenue);
@@ -820,7 +834,7 @@ export default function App() {
       };
 
       if (aiMode === 'gemini') {
-        const res = await fetch('/api/gemini/advisor', {
+        const res = await fetch(resolveApiUrl('/api/gemini/advisor'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -835,11 +849,11 @@ export default function App() {
           }),
         });
 
-        const data = await res.json();
+        const data = await parseApiJsonResponse<{ result?: string; error?: string }>(res);
         if (data.error) {
           setAiChat(prev => [...prev, { role: 'assistant', text: `Ошибка Gemini: ${data.error}`, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
         } else {
-          setAiChat(prev => [...prev, { role: 'assistant', text: data.result, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
+          setAiChat(prev => [...prev, { role: 'assistant', text: data.result || 'Пустой ответ от ИИ.', timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
         }
       } else {
         try {
@@ -915,13 +929,13 @@ export default function App() {
           const base64String = dataUrl.split(',')[1];
           const mimeType = file.type;
 
-          const response = await fetch('/api/gemini/parse-recipe', {
+          const response = await fetch(resolveApiUrl('/api/gemini/parse-recipe'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ imageBase64: base64String, mimeType })
           });
 
-          const data = await response.json();
+          const data = await parseApiJsonResponse<{ recipe?: any; error?: string }>(response);
           if (data.error) {
             showNotice('error', `Ошибка распознавания: ${data.error}`);
           } else if (data.recipe) {
@@ -979,13 +993,13 @@ export default function App() {
           const base64String = (reader.result as string).split(',')[1];
           const mimeType = file.type;
 
-          const response = await fetch('/api/gemini/parse-receipt-items', {
+          const response = await fetch(resolveApiUrl('/api/gemini/parse-receipt-items'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ imageBase64: base64String, mimeType })
           });
 
-          const data = await response.json();
+          const data = await parseApiJsonResponse<{ items?: any[]; error?: string }>(response);
           if (data.error) {
             showNotice('error', `Ошибка распознавания чека: ${data.error}`);
           } else if (data.items && Array.isArray(data.items)) {
@@ -2198,6 +2212,98 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+
+                {aiMode === 'gemini' && (
+                  <div className="space-y-2">
+                    <label className="block text-stone-400 text-xs">Адрес сервера API</label>
+                    <input
+                      type="url"
+                      value={apiServerUrl}
+                      onChange={e => setApiServerUrl(e.target.value)}
+                      placeholder={DEFAULT_PUBLISHED_SERVER_URL}
+                      className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-xs text-stone-200 outline-none focus:border-amber-500"
+                    />
+                    <div className="flex gap-1.5 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const cleaned = normalizeServerUrl(apiServerUrl);
+                          if (cleaned && !/^https?:\/\//i.test(cleaned)) {
+                            showNotice('error', 'Укажите корректный URL (с http:// или https://) или оставьте поле пустым.');
+                            return;
+                          }
+                          setApiServerUrl(cleaned);
+                          saveApiBaseUrl(cleaned);
+                          showNotice(
+                            'success',
+                            cleaned
+                              ? `Адрес сервера API сохранён: ${cleaned}`
+                              : 'Сохранён авто-режим (в APK используется Cloud Run).'
+                          );
+                        }}
+                        className="text-[10px] bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 px-2.5 py-1 rounded-lg border border-emerald-500/30 font-semibold"
+                      >
+                        Сохранить адрес
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isCheckingServer}
+                        onClick={async () => {
+                          setIsCheckingServer(true);
+                          try {
+                            const cleaned = normalizeServerUrl(apiServerUrl);
+                            if (cleaned && !/^https?:\/\//i.test(cleaned)) {
+                              showNotice('error', 'Укажите корректный URL (с http:// или https://).');
+                              return;
+                            }
+                            const healthUrl = cleaned ? resolveApiUrl('/api/health', cleaned) : resolveApiUrl('/api/health');
+                            const res = await fetch(healthUrl);
+                            const info = await parseApiJsonResponse<{ status?: string; geminiConfigured?: boolean }>(res);
+                            if (info.status === 'ok' && info.geminiConfigured) {
+                              showNotice('success', 'Связь с сервером API установлена, Gemini подключён.');
+                            } else if (info.status === 'ok') {
+                              showNotice('error', 'Сервер доступен, но GEMINI_API_KEY на сервере не настроен.');
+                            } else {
+                              showNotice('error', 'Неожиданный ответ от /api/health.');
+                            }
+                          } catch (err: any) {
+                            showNotice('error', err?.message || 'Не удалось связаться с сервером API.');
+                          } finally {
+                            setIsCheckingServer(false);
+                          }
+                        }}
+                        className="text-[10px] bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 px-2.5 py-1 rounded-lg border border-amber-500/30 font-semibold disabled:opacity-50"
+                      >
+                        {isCheckingServer ? 'Проверка...' : 'Проверить связь'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setApiServerUrl(DEFAULT_PUBLISHED_SERVER_URL);
+                          saveApiBaseUrl(DEFAULT_PUBLISHED_SERVER_URL);
+                          showNotice('success', 'Установлен удалённый сервер Cloud Run по умолчанию.');
+                        }}
+                        className="text-[10px] bg-stone-800 hover:bg-stone-700 text-stone-300 px-2 py-1 rounded-lg border border-stone-700"
+                      >
+                        Cloud Run (APK)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setApiServerUrl('');
+                          saveApiBaseUrl('');
+                          showNotice('success', 'Включён авто-выбор сервера API.');
+                        }}
+                        className="text-[10px] bg-stone-800 hover:bg-stone-700 text-stone-300 px-2 py-1 rounded-lg border border-stone-700"
+                      >
+                        Авто
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-stone-500">
+                      Для Android APK по умолчанию: {DEFAULT_PUBLISHED_SERVER_URL}
+                    </p>
+                  </div>
+                )}
 
                 {aiMode === 'local' && (
                   <div className="space-y-2">
