@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -48,9 +48,18 @@ async function startServer() {
     );
   };
 
+  const isTimeoutError = (err: any): boolean => {
+    const msg = String(err?.message || '');
+    return (
+      err?.name === 'TimeoutError' ||
+      err?.name === 'AbortError' ||
+      msg.includes('aborted due to timeout')
+    );
+  };
+
   const formatGeminiError = (err: any, fallback: string): string => {
     const raw = String(err?.message || '');
-    if (err?.name === 'TimeoutError' || err?.name === 'AbortError' || raw.includes('aborted due to timeout')) {
+    if (isTimeoutError(err)) {
       return 'Сервер ИИ не успел ответить вовремя. Повторите запрос.';
     }
     if (isTransientGeminiError(err)) {
@@ -63,21 +72,45 @@ async function startServer() {
   };
 
   const generateWithRetry = async (ai: GoogleGenAI, params: Parameters<GoogleGenAI['models']['generateContent']>[0]) => {
-    const withTimeout = () => ({
+    const primaryParams = {
       ...params,
       config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         ...params.config,
-        abortSignal: AbortSignal.timeout(45000),
+        abortSignal: AbortSignal.timeout(20000),
       },
-    });
+    };
     try {
-      return await ai.models.generateContent(withTimeout());
+      return await ai.models.generateContent(primaryParams);
     } catch (firstErr: any) {
-      if (isTransientGeminiError(firstErr)) {
-        await new Promise((r) => setTimeout(r, 1200));
-        return await ai.models.generateContent(withTimeout());
+      if (!isTransientGeminiError(firstErr) && !isTimeoutError(firstErr)) {
+        throw firstErr;
       }
-      throw firstErr;
+      const fallbackParams = {
+        ...params,
+        model: 'gemini-3.1-flash-lite',
+        config: {
+          ...params.config,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+          abortSignal: AbortSignal.timeout(20000),
+        },
+      };
+      await new Promise((r) => setTimeout(r, 400));
+      try {
+        return await ai.models.generateContent(fallbackParams);
+      } catch (fallbackErr: any) {
+        if (isTransientGeminiError(fallbackErr) || isTimeoutError(fallbackErr)) {
+          await new Promise((r) => setTimeout(r, 800));
+          return await ai.models.generateContent({
+            ...fallbackParams,
+            config: {
+              ...fallbackParams.config,
+              abortSignal: AbortSignal.timeout(18000),
+            },
+          });
+        }
+        throw fallbackErr;
+      }
     }
   };
 
