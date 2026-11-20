@@ -30,29 +30,36 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools platforms;android-35 build-tools;35.0.0
+          packages: platform-tools platforms;android-35 build-tools;35.0.0 platforms;android-36 build-tools;36.0.0
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --legacy-peer-deps
+          else
+            npm install --legacy-peer-deps
+          fi
 
       - name: Build web assets
         env:
           VITE_API_BASE_URL: https://service-473676-595246104496.us-west1.run.app
         run: npx vite build
 
-      - name: Install Capacitor and add Android platform
+      - name: Sync Capacitor Android platform
         run: |
-          npm install --legacy-peer-deps @capacitor/core@^7 @capacitor/cli@^7 @capacitor/android@^7
           if [ ! -f capacitor.config.json ] && [ ! -f capacitor.config.ts ]; then
             npx cap init "КулинарПро" "ru.kulinarpro.app" --web-dir dist
           fi
-          npx cap add android
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
           npx cap sync android
 
       - name: Apply app launcher icons
         run: |
-          python3 -m pip install --quiet pillow
-          python3 - << 'EOF'
+          if [ -f public/pwa-512x512.png ] && [ -f public/pwa-maskable-512x512.png ]; then
+            python3 -m pip install --quiet pillow
+            python3 - << 'EOF'
           import os
           from PIL import Image
 
@@ -75,6 +82,7 @@ jobs:
                   icon.resize((std_sz, std_sz), Image.LANCZOS).save(os.path.join(folder, "ic_launcher_round.png"))
                   maskable.resize((fg_sz, fg_sz), Image.LANCZOS).save(os.path.join(folder, "ic_launcher_foreground.png"))
           EOF
+          fi
 
       - name: Build Debug APK
         run: |
