@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">КулинарПро</string>
-    <string name="title_activity_main">КулинарПро</string>
+    <string name="app_name">САЛАТиКо</string>
+    <string name="title_activity_main">САЛАТиКо</string>
     <string name="package_name">ru.kulinarpro.app</string>
     <string name="custom_url_scheme">ru.kulinarpro.app</string>
 </resources>

@@ -1,6 +1,6 @@
 {
   "appId": "ru.kulinarpro.app",
-  "appName": "КулинарПро",
+  "appName": "САЛАТиКо",
   "webDir": "dist",
   "server": {
     "androidScheme": "https"

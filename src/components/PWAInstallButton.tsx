@@ -59,7 +59,7 @@ export const PWAInstallButton: React.FC = () => {
                   Пролистайте вниз и выберите <strong className="text-white">На экран «Домой»</strong>.
                 </li>
                 <li>
-                  Нажмите <strong className="text-amber-400">Добавить</strong> — иконка КулинарПро появится на рабочем столе.
+                  Нажмите <strong className="text-amber-400">Добавить</strong> — иконка САЛАТиКо появится на рабочем столе.
                 </li>
               </ol>
               <button

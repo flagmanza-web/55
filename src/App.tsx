@@ -5,7 +5,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  ChefHat, 
   Store, 
   Package, 
   Calculator, 
@@ -66,10 +65,20 @@ interface Ingredient {
   supplier: string;
 }
 
+type RecipeItemUnit = 'кг' | 'г' | 'шт' | 'л' | 'мл';
+const RECIPE_ITEM_UNITS: RecipeItemUnit[] = ['кг', 'г', 'шт', 'л', 'мл'];
+
 interface RecipeItem {
-  ingredientId: string;
-  grossQty: number; // брутто на 1 ед/кг выхода
-  netQty: number;   // нетто на 1 ед/кг выхода
+  ingredientId?: string; // необязательная привязка к складу для авторасчета цены
+  name: string;          // название продукта (вручную или из склада)
+  quantity: number;      // вес / количество на 1 кг выхода
+  unit: RecipeItemUnit;  // кг, г, шт, л, мл
+  grossQty?: number;     // устаревшее поле для миграции
+  netQty?: number;       // устаревшее поле для миграции
+}
+
+interface EditableRecipeItem extends RecipeItem {
+  quantityInput: string;
 }
 
 const RECIPE_CATEGORIES = [
@@ -192,10 +201,10 @@ const INITIAL_RECIPES: Recipe[] = [
     shelfLifeHours: 72,
     imageUrl: '/src/assets/images/pelmeni_dumplings_1794987230090.jpg',
     items: [
-      { ingredientId: 'ing-1', grossQty: 0.550, netQty: 0.500 }, // на 1 кг
-      { ingredientId: 'ing-3', grossQty: 0.350, netQty: 0.300 }, // на 1 кг
-      { ingredientId: 'ing-4', grossQty: 0.200, netQty: 0.180 }, // на 1 кг
-      { ingredientId: 'ing-5', grossQty: 0.050, netQty: 0.050 }  // на 1 кг
+      { ingredientId: 'ing-1', name: 'Мука пшеничная в/с', quantity: 0.500, unit: 'кг' },
+      { ingredientId: 'ing-3', name: 'Говядина (мякоть)', quantity: 0.300, unit: 'кг' },
+      { ingredientId: 'ing-4', name: 'Свинина (шейка)', quantity: 0.180, unit: 'кг' },
+      { ingredientId: 'ing-5', name: 'Яйцо куриное С0', quantity: 1, unit: 'шт' }
     ],
     steps: [
       '1. Замесить крутое тесто из муки, воды, яйца и соли, дать отдохнуть 30 минут.',
@@ -215,11 +224,11 @@ const INITIAL_RECIPES: Recipe[] = [
     shelfLifeHours: 48,
     imageUrl: '/src/assets/images/napoleon_cake_1794987229773.jpg',
     items: [
-      { ingredientId: 'ing-1', grossQty: 0.450, netQty: 0.400 },
-      { ingredientId: 'ing-2', grossQty: 0.350, netQty: 0.350 },
-      { ingredientId: 'ing-6', grossQty: 0.500, netQty: 0.500 },
-      { ingredientId: 'ing-5', grossQty: 0.100, netQty: 0.100 },
-      { ingredientId: 'ing-10', grossQty: 0.200, netQty: 0.200 }
+      { ingredientId: 'ing-1', name: 'Мука пшеничная в/с', quantity: 0.400, unit: 'кг' },
+      { ingredientId: 'ing-2', name: 'Масло сливочное 82.5%', quantity: 0.350, unit: 'кг' },
+      { ingredientId: 'ing-6', name: 'Молоко 3.2%', quantity: 0.500, unit: 'л' },
+      { ingredientId: 'ing-5', name: 'Яйцо куриное С0', quantity: 2, unit: 'шт' },
+      { ingredientId: 'ing-10', name: 'Сахар белый', quantity: 0.200, unit: 'кг' }
     ],
     steps: [
       '1. Приготовить слоеное рубленное тесто с холодным сливочным маслом.',
@@ -239,11 +248,11 @@ const INITIAL_RECIPES: Recipe[] = [
     shelfLifeHours: 24,
     imageUrl: '/src/assets/images/quiche_salmon_1794987230129.jpg',
     items: [
-      { ingredientId: 'ing-1', grossQty: 0.300, netQty: 0.280 },
-      { ingredientId: 'ing-2', grossQty: 0.150, netQty: 0.150 },
-      { ingredientId: 'ing-8', grossQty: 0.350, netQty: 0.320 },
-      { ingredientId: 'ing-9', grossQty: 0.200, netQty: 0.200 },
-      { ingredientId: 'ing-5', grossQty: 0.080, netQty: 0.080 }
+      { ingredientId: 'ing-1', name: 'Мука пшеничная в/с', quantity: 0.280, unit: 'кг' },
+      { ingredientId: 'ing-2', name: 'Масло сливочное 82.5%', quantity: 0.150, unit: 'кг' },
+      { ingredientId: 'ing-8', name: 'Лосось (филе)', quantity: 0.320, unit: 'кг' },
+      { ingredientId: 'ing-9', name: 'Сливки 33%', quantity: 0.200, unit: 'л' },
+      { ingredientId: 'ing-5', name: 'Яйцо куриное С0', quantity: 2, unit: 'шт' }
     ],
     steps: [
       '1. Сделать песочную основу для пирога, выпечь "слепым" методом 15 минут.',
@@ -262,8 +271,8 @@ const INITIAL_RECIPES: Recipe[] = [
     sellingPrice: 520,
     shelfLifeHours: 48,
     items: [
-      { ingredientId: 'ing-3', grossQty: 0.280, netQty: 0.220 },
-      { ingredientId: 'ing-7', grossQty: 0.250, netQty: 0.200 }
+      { ingredientId: 'ing-3', name: 'Говядина (мякоть)', quantity: 0.220, unit: 'кг' },
+      { ingredientId: 'ing-7', name: 'Картофель свежий', quantity: 0.200, unit: 'кг' }
     ],
     steps: [
       '1. Сварить насыщенный говяжий бульон.',
@@ -281,9 +290,9 @@ const INITIAL_RECIPES: Recipe[] = [
     sellingPrice: 380,
     shelfLifeHours: 24,
     items: [
-      { ingredientId: 'ing-6', grossQty: 0.650, netQty: 0.650 },
-      { ingredientId: 'ing-2', grossQty: 0.060, netQty: 0.060 },
-      { ingredientId: 'ing-10', grossQty: 0.040, netQty: 0.040 }
+      { ingredientId: 'ing-6', name: 'Молоко 3.2%', quantity: 0.650, unit: 'л' },
+      { ingredientId: 'ing-2', name: 'Масло сливочное 82.5%', quantity: 0.060, unit: 'кг' },
+      { ingredientId: 'ing-10', name: 'Сахар белый', quantity: 0.040, unit: 'кг' }
     ],
     steps: [
       '1. Довести молоко до кипения.',
@@ -301,9 +310,9 @@ const INITIAL_RECIPES: Recipe[] = [
     sellingPrice: 890,
     shelfLifeHours: 24,
     items: [
-      { ingredientId: 'ing-7', grossQty: 0.450, netQty: 0.380 },
-      { ingredientId: 'ing-8', grossQty: 0.250, netQty: 0.220 },
-      { ingredientId: 'ing-5', grossQty: 4, netQty: 4 }
+      { ingredientId: 'ing-7', name: 'Картофель свежий', quantity: 0.380, unit: 'кг' },
+      { ingredientId: 'ing-8', name: 'Лосось (филе)', quantity: 0.220, unit: 'кг' },
+      { ingredientId: 'ing-5', name: 'Яйцо куриное С0', quantity: 4, unit: 'шт' }
     ],
     steps: [
       '1. Отварить картофель и яйца, остудить и нарезать кубиком.',
@@ -321,7 +330,7 @@ const INITIAL_RECIPES: Recipe[] = [
     sellingPrice: 320,
     shelfLifeHours: 48,
     items: [
-      { ingredientId: 'ing-10', grossQty: 0.110, netQty: 0.110 }
+      { ingredientId: 'ing-10', name: 'Сахар белый', quantity: 0.110, unit: 'кг' }
     ],
     steps: [
       '1. Отжать сок из свежих или свежемороженых ягод.',
@@ -406,7 +415,36 @@ export default function App() {
     return parsed.map((r: any) => ({
       ...r,
       category: normalizeCategory(r.category || 'Горячие блюда'),
-      imageUrl: typeof r.imageUrl === 'string' && r.imageUrl.startsWith('blob:') ? undefined : r.imageUrl
+      imageUrl: typeof r.imageUrl === 'string' && r.imageUrl.startsWith('blob:') ? undefined : r.imageUrl,
+      items: Array.isArray(r.items)
+        ? r.items.map((rawItem: any): RecipeItem => {
+            const matchedIng = rawItem?.ingredientId
+              ? ingredients.find(i => i.id === rawItem.ingredientId) || INITIAL_INGREDIENTS.find(i => i.id === rawItem.ingredientId)
+              : undefined;
+            const name =
+              typeof rawItem?.name === 'string' && rawItem.name.trim()
+                ? rawItem.name.trim()
+                : matchedIng?.name || 'Продукт';
+            const candidateUnit = rawItem?.unit || matchedIng?.unit || 'кг';
+            const unit: RecipeItemUnit = (RECIPE_ITEM_UNITS as readonly string[]).includes(candidateUnit)
+              ? (candidateUnit as RecipeItemUnit)
+              : 'кг';
+            const quantity =
+              typeof rawItem?.quantity === 'number'
+                ? rawItem.quantity
+                : typeof rawItem?.netQty === 'number'
+                  ? rawItem.netQty
+                  : typeof rawItem?.grossQty === 'number'
+                    ? rawItem.grossQty
+                    : 0;
+            return {
+              ...(rawItem?.ingredientId ? { ingredientId: rawItem.ingredientId } : {}),
+              name,
+              quantity,
+              unit,
+            };
+          })
+        : [],
     }));
   });
 
@@ -464,7 +502,7 @@ export default function App() {
   const [isCheckingServer, setIsCheckingServer] = useState(false);
 
   const [aiMemoryNotes, setAiMemoryNotes] = useState<string>(() => {
-    return localStorage.getItem('cp_ai_memory') || 'Магазин кулинарии "КулинарПро". Долговременная память: рецепты ТТК рассчитаны точно на 1 кг готовой продукции. Основной упор на горячие блюда, супы, каши, авторскую выпечку, салаты, десерты и напитки. Целевой фудкост 28-32%.';
+    return localStorage.getItem('cp_ai_memory') || 'Домашняя кухня "САЛАТиКо". Долговременная память: рецепты ТТК рассчитаны точно на 1 кг готовой продукции. Основной упор на горячие блюда, супы, каши, авторскую выпечку, салаты, десерты и напитки. Целевой фудкост 28-32%.';
   });
 
   const [aiChat, setAiChat] = useState<ChatMessage[]>(() => {
@@ -585,7 +623,7 @@ export default function App() {
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
   const [recipeToDelete, setRecipeToDelete] = useState<Recipe | null>(null);
   const [isEditingRecipeItems, setIsEditingRecipeItems] = useState(false);
-  const [editableRecipeItems, setEditableRecipeItems] = useState<RecipeItem[]>([]);
+  const [editableRecipeItems, setEditableRecipeItems] = useState<EditableRecipeItem[]>([]);
   const [isNewRecipeModalOpen, setIsNewRecipeModalOpen] = useState(false);
   const [isNewIngredientModalOpen, setIsNewIngredientModalOpen] = useState(false);
   const [isNewExpenseModalOpen, setIsNewExpenseModalOpen] = useState(false);
@@ -762,12 +800,76 @@ export default function App() {
   };
 
   // --- HELPER CALCULATIONS ---
+  const findIngredientForItem = (item: RecipeItem): Ingredient | undefined => {
+    if (item.ingredientId) {
+      const byId = ingredients.find(i => i.id === item.ingredientId);
+      if (byId) return byId;
+    }
+    const normalizedName = (item.name || '').trim().toLowerCase();
+    if (!normalizedName) return undefined;
+    return ingredients.find(i => i.name.trim().toLowerCase() === normalizedName);
+  };
+
+  const getRecipeItemName = (item: RecipeItem): string => {
+    const manual = (item.name || '').trim();
+    if (manual) return manual;
+    return findIngredientForItem(item)?.name || 'Продукт';
+  };
+
+  const getRecipeItemUnit = (item: RecipeItem): RecipeItemUnit => {
+    if (item.unit && (RECIPE_ITEM_UNITS as readonly string[]).includes(item.unit)) {
+      return item.unit;
+    }
+    return findIngredientForItem(item)?.unit || 'кг';
+  };
+
+  const getRecipeItemQty = (item: RecipeItem): number => {
+    if (typeof item.quantity === 'number') return item.quantity;
+    if (typeof item.netQty === 'number') return item.netQty;
+    if (typeof item.grossQty === 'number') return item.grossQty;
+    return 0;
+  };
+
+  const formatWeightNumber = (qty: number): string => {
+    const rounded = Math.round((qty + Number.EPSILON) * 1000) / 1000;
+    return Number.isFinite(rounded) ? String(rounded) : '0';
+  };
+
+  const convertUnitQty = (qty: number, fromUnit: RecipeItemUnit, toUnit: Ingredient['unit']): number | null => {
+    if (fromUnit === toUnit) return qty;
+    if (fromUnit === 'г' && toUnit === 'кг') return qty / 1000;
+    if (fromUnit === 'кг' && toUnit === 'г') return qty * 1000;
+    if (fromUnit === 'мл' && toUnit === 'л') return qty / 1000;
+    if (fromUnit === 'л' && toUnit === 'мл') return qty * 1000;
+    return null;
+  };
+
+  const calculateRecipeItemCost = (item: RecipeItem): number | null => {
+    const ing = findIngredientForItem(item);
+    if (!ing) return null;
+    const converted = convertUnitQty(getRecipeItemQty(item), getRecipeItemUnit(item), ing.unit);
+    if (converted === null) return null;
+    return ing.costPerUnit * converted;
+  };
+
+  const toEditableItems = (items: RecipeItem[]): EditableRecipeItem[] =>
+    items.map(it => {
+      const qty = getRecipeItemQty(it);
+      return {
+        ...it,
+        name: getRecipeItemName(it),
+        quantity: qty,
+        unit: getRecipeItemUnit(it),
+        quantityInput: qty > 0 ? String(qty) : '',
+      };
+    });
+
   const calculateRecipeCost = (recipe: Recipe) => {
     let totalCost = 0;
     recipe.items.forEach(item => {
-      const ing = ingredients.find(i => i.id === item.ingredientId);
-      if (ing) {
-        totalCost += ing.costPerUnit * item.netQty;
+      const itemCost = calculateRecipeItemCost(item);
+      if (itemCost !== null) {
+        totalCost += itemCost;
       }
     });
     return totalCost; // стоимость на 1 кг выхода
@@ -824,7 +926,7 @@ export default function App() {
 
     try {
       const context = {
-        storeName: 'КулинарПро (Кулинарный магазин)',
+        storeName: 'САЛАТиКо (Домашняя кухня каждый день)',
         mandatoryLongTermMemory: aiMemoryNotes,
         standardBasis: 'Все граммовки в ТТК рассчитаны на 1 кг готовой продукции',
         ingredientsCount: ingredients.length,
@@ -951,8 +1053,18 @@ export default function App() {
               shelfLifeHours: parsed.shelfLifeHours || 48,
               imageUrl: dataUrl.length < 250000 ? dataUrl : undefined,
               items: [
-                { ingredientId: ingredients[0]?.id || 'ing-1', grossQty: 0.5, netQty: 0.45 },
-                { ingredientId: ingredients[1]?.id || 'ing-2', grossQty: 0.2, netQty: 0.2 }
+                {
+                  ingredientId: ingredients[0]?.id,
+                  name: ingredients[0]?.name || 'Мука пшеничная в/с',
+                  quantity: 0.45,
+                  unit: ingredients[0]?.unit || 'кг',
+                },
+                {
+                  ingredientId: ingredients[1]?.id,
+                  name: ingredients[1]?.name || 'Масло сливочное 82.5%',
+                  quantity: 0.2,
+                  unit: ingredients[1]?.unit || 'кг',
+                }
               ],
               steps: parsed.steps || ['1. Подготовить ингредиенты по фото.', '2. Приготовить согласно техпроцессу.']
             };
@@ -1065,14 +1177,18 @@ export default function App() {
       {/* HEADER BAR */}
       <header className="bg-stone-900 border-b border-stone-800 sticky top-0 z-30 px-4 py-2.5 sm:py-3 flex items-center justify-between shadow-md shrink-0">
         <div className="flex items-center space-x-2.5 sm:space-x-3 min-w-0">
-          <div className="bg-gradient-to-tr from-amber-600 to-amber-400 p-2 sm:p-2.5 rounded-xl shadow-lg shadow-amber-900/20 text-stone-950 shrink-0">
-            <ChefHat className="w-5 h-5 sm:w-6 sm:h-6 stroke-[2.5]" />
+          <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl overflow-hidden bg-white shadow-lg border border-stone-700/70 shrink-0">
+            <img
+              src="/assets/aistudio/file_00000000f5dc822f85a82f2582820461_31c1506b.jpg"
+              alt="САЛАТиКо"
+              className="w-full h-full object-cover"
+            />
           </div>
           <div className="min-w-0">
             <h1 className="text-base sm:text-lg font-bold tracking-tight text-white flex items-center gap-2">
-              КулинарПро <span className="text-[10px] sm:text-xs uppercase px-1.5 sm:px-2 py-0.5 bg-amber-500/20 text-amber-400 rounded-md font-semibold border border-amber-500/30">PRO</span>
+              САЛАТиКо <span className="text-[10px] sm:text-xs uppercase px-1.5 sm:px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-md font-semibold border border-emerald-500/30">PRO</span>
             </h1>
-            <p className="hidden sm:block text-xs text-stone-400 truncate">ТТК (на 1 кг), меню на неделю, склад и ИИ</p>
+            <p className="hidden sm:block text-xs text-stone-400 truncate">Домашняя кухня каждый день • ТТК, меню, склад и ИИ</p>
           </div>
         </div>
 
@@ -1688,8 +1804,8 @@ export default function App() {
                                           <thead className="bg-stone-950/80 text-stone-400 uppercase tracking-wider border-b border-stone-800">
                                             <tr>
                                               <th className="p-3.5 border-r border-stone-800 w-1/4">Блюдо / ТТК</th>
-                                              <th className="p-3.5 border-r border-stone-800 w-2/5">Раскладка ингредиентов (на 1 кг)</th>
-                                              <th className="p-3.5 border-r border-stone-800 w-1/5">Граммовки (Брутто / Нетто)</th>
+                                              <th className="p-3.5 border-r border-stone-800 w-2/5">Раскладка продуктов (на 1 кг)</th>
+                                              <th className="p-3.5 border-r border-stone-800 w-1/5">Вес</th>
                                               <th className="p-3.5 text-center w-36">Действия</th>
                                             </tr>
                                           </thead>
@@ -1712,31 +1828,24 @@ export default function App() {
                                               <td className="p-0 border-r border-stone-800">
                                                 <table className="w-full text-xs">
                                                   <tbody className="divide-y divide-stone-800/60">
-                                                    {recipe.items.map((it, idx) => {
-                                                      const ing = ingredients.find(i => i.id === it.ingredientId);
-                                                      return (
-                                                        <tr key={idx} className="hover:bg-stone-800/20">
-                                                          <td className="p-3.5 text-stone-200 font-medium">{ing ? ing.name : 'Неизвестный ингредиент'}</td>
-                                                        </tr>
-                                                      );
-                                                    })}
+                                                    {recipe.items.map((it, idx) => (
+                                                      <tr key={idx} className="hover:bg-stone-800/20">
+                                                        <td className="p-3.5 text-stone-200 font-medium">{getRecipeItemName(it)}</td>
+                                                      </tr>
+                                                    ))}
                                                   </tbody>
                                                 </table>
                                               </td>
                                               <td className="p-0 border-r border-stone-800">
                                                 <table className="w-full text-xs">
                                                   <tbody className="divide-y divide-stone-800/60">
-                                                    {recipe.items.map((it, idx) => {
-                                                      const ing = ingredients.find(i => i.id === it.ingredientId);
-                                                      return (
-                                                        <tr key={idx} className="hover:bg-stone-800/20">
-                                                          <td className="p-3.5 text-stone-300 font-mono">
-                                                            Брутто: <span className="text-white font-semibold">{it.grossQty}</span> {ing?.unit || ''} <br/>
-                                                            Нетто: <span className="text-amber-400 font-semibold">{it.netQty}</span> {ing?.unit || ''}
-                                                          </td>
-                                                        </tr>
-                                                      );
-                                                    })}
+                                                    {recipe.items.map((it, idx) => (
+                                                      <tr key={idx} className="hover:bg-stone-800/20">
+                                                        <td className="p-3.5 text-stone-300 font-mono">
+                                                          <span className="text-amber-400 font-semibold">{formatWeightNumber(getRecipeItemQty(it))}</span> {getRecipeItemUnit(it)}
+                                                        </td>
+                                                      </tr>
+                                                    ))}
                                                   </tbody>
                                                 </table>
                                               </td>
@@ -1747,7 +1856,7 @@ export default function App() {
                                                       setSelectedRecipe(recipe);
                                                       setDesiredTotalYield(1);
                                                       setIsEditingRecipeItems(false);
-                                                      setEditableRecipeItems(recipe.items);
+                                                      setEditableRecipeItems(toEditableItems(recipe.items));
                                                     }}
                                                     className="w-full bg-stone-800 hover:bg-stone-700 text-stone-200 px-3 py-2 rounded-xl text-xs font-semibold transition text-center shadow-sm"
                                                   >
@@ -1837,7 +1946,7 @@ export default function App() {
                                                 setSelectedRecipe(recipe); 
                                                 setDesiredTotalYield(1); 
                                                 setIsEditingRecipeItems(false);
-                                                setEditableRecipeItems(recipe.items);
+                                                setEditableRecipeItems(toEditableItems(recipe.items));
                                               }}
                                               className="flex-1 bg-stone-800 hover:bg-stone-700 text-stone-200 py-2 rounded-xl text-xs font-semibold transition text-center"
                                             >
@@ -2927,21 +3036,39 @@ export default function App() {
 
                 {/* Ingredients Table with Editable Rows */}
                 <div>
-                  <div className="flex justify-between items-center mb-3">
+                  <div className="flex flex-wrap justify-between items-center gap-2 mb-3">
                     <h4 className="font-semibold text-white">
                       {isEditingRecipeItems 
                         ? 'Редактирование строк ТТК (база на 1 кг):' 
-                        : `Раскладка ингредиентов (на ${desiredTotalYield} кг готовой продукции):`}
+                        : `Раскладка продуктов (на ${desiredTotalYield} кг готовой продукции):`}
                     </h4>
                     <button
                       onClick={() => {
                         if (isEditingRecipeItems) {
-                          const updatedRecipes = recipes.map(r => r.id === selectedRecipe.id ? { ...r, items: editableRecipeItems } : r);
+                          const cleanedItems: RecipeItem[] = editableRecipeItems
+                            .filter(it => {
+                              const parsedQty = parseFloat((it.quantityInput || '').replace(',', '.')) || 0;
+                              return it.name.trim() !== '' || parsedQty > 0;
+                            })
+                            .map(it => {
+                              const parsedQty = Math.max(0, parseFloat((it.quantityInput || '').replace(',', '.')) || 0);
+                              const trimmedName = it.name.trim() || 'Продукт';
+                              const matched = ingredients.find(
+                                ing => ing.name.trim().toLowerCase() === trimmedName.toLowerCase()
+                              );
+                              return {
+                                ...(matched ? { ingredientId: matched.id } : {}),
+                                name: trimmedName,
+                                quantity: parsedQty,
+                                unit: it.unit,
+                              };
+                            });
+                          const updatedRecipes = recipes.map(r => r.id === selectedRecipe.id ? { ...r, items: cleanedItems } : r);
                           setRecipes(updatedRecipes);
-                          setSelectedRecipe({ ...selectedRecipe, items: editableRecipeItems });
+                          setSelectedRecipe({ ...selectedRecipe, items: cleanedItems });
                           setIsEditingRecipeItems(false);
                         } else {
-                          setEditableRecipeItems(selectedRecipe.items);
+                          setEditableRecipeItems(toEditableItems(selectedRecipe.items));
                           setIsEditingRecipeItems(true);
                         }
                       }}
@@ -2953,71 +3080,110 @@ export default function App() {
                   </div>
 
                   {isEditingRecipeItems ? (
-                    <div className="space-y-3 bg-stone-950 p-4 rounded-xl border border-stone-800">
-                      <p className="text-[11px] text-stone-400">Измените брутто и нетто на 1 кг готовой продукции, выберите ингредиент из склада или удалите/добавьте строчки.</p>
-                      <div className="space-y-2">
+                    <div className="space-y-3 bg-stone-950 p-3 sm:p-4 rounded-xl border border-stone-800">
+                      <p className="text-[11px] text-stone-400">
+                        Введите продукт вручную (или выберите подсказку со склада), укажите вес на 1 кг готовой продукции и единицу измерения (кг, г, шт, л, мл).
+                      </p>
+                      <datalist id="ttk-ingredients-datalist">
+                        {ingredients.map(ing => (
+                          <option key={ing.id} value={ing.name} />
+                        ))}
+                      </datalist>
+                      <div className="space-y-2.5">
                         {editableRecipeItems.map((item, idx) => (
-                          <div key={idx} className="flex items-center gap-2 bg-stone-900 p-2.5 rounded-xl border border-stone-800">
-                            <select
-                              value={item.ingredientId}
-                              onChange={e => {
-                                const ingId = e.target.value;
-                                setEditableRecipeItems(prev => prev.map((it, i) => i === idx ? { ...it, ingredientId: ingId } : it));
-                              }}
-                              className="flex-1 bg-stone-950 border border-stone-700 rounded-lg px-2.5 py-1.5 text-stone-100 text-xs outline-none"
-                            >
-                              {ingredients.map(ing => (
-                                <option key={ing.id} value={ing.id}>{ing.name} ({ing.unit})</option>
-                              ))}
-                            </select>
-                            <div className="w-24">
-                              <label className="block text-[9px] text-stone-400">Брутто/1кг</label>
+                          <div key={idx} className="flex flex-col sm:flex-row sm:items-end gap-2 bg-stone-900 p-2.5 rounded-xl border border-stone-800">
+                            <div className="flex-1 min-w-0">
+                              <label className="block text-[10px] text-stone-400 mb-1">Продукт</label>
                               <input
-                                type="number"
-                                step="0.001"
-                                value={item.grossQty}
+                                type="text"
+                                list="ttk-ingredients-datalist"
+                                value={item.name}
+                                placeholder="Например: Колбаса докторская"
                                 onChange={e => {
-                                  const val = parseFloat(e.target.value) || 0;
-                                  setEditableRecipeItems(prev => prev.map((it, i) => i === idx ? { ...it, grossQty: val } : it));
+                                  const val = e.target.value;
+                                  const matched = ingredients.find(
+                                    ing => ing.name.trim().toLowerCase() === val.trim().toLowerCase()
+                                  );
+                                  setEditableRecipeItems(prev =>
+                                    prev.map((it, i) =>
+                                      i === idx
+                                        ? {
+                                            ...it,
+                                            name: val,
+                                            ingredientId: matched?.id,
+                                            ...(matched && !it.name.trim() ? { unit: matched.unit } : {}),
+                                          }
+                                        : it
+                                    )
+                                  );
                                 }}
-                                className="w-full bg-stone-950 border border-stone-700 rounded-lg px-2 py-1 text-xs text-stone-100 text-center outline-none"
+                                className="w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2.5 py-2 text-stone-100 text-xs outline-none"
                               />
                             </div>
-                            <div className="w-24">
-                              <label className="block text-[9px] text-stone-400">Нетто/1кг</label>
-                              <input
-                                type="number"
-                                step="0.001"
-                                value={item.netQty}
-                                onChange={e => {
-                                  const val = parseFloat(e.target.value) || 0;
-                                  setEditableRecipeItems(prev => prev.map((it, i) => i === idx ? { ...it, netQty: val } : it));
+                            <div className="flex items-end gap-2 shrink-0">
+                              <div className="flex-1 sm:w-24">
+                                <label className="block text-[10px] text-stone-400 mb-1">Вес</label>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  placeholder="0"
+                                  value={item.quantityInput}
+                                  onChange={e => {
+                                    const raw = e.target.value;
+                                    const parsed = parseFloat(raw.replace(',', '.')) || 0;
+                                    setEditableRecipeItems(prev =>
+                                      prev.map((it, i) =>
+                                        i === idx ? { ...it, quantityInput: raw, quantity: parsed } : it
+                                      )
+                                    );
+                                  }}
+                                  className="w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2 py-2 text-xs text-stone-100 text-center outline-none"
+                                />
+                              </div>
+                              <div className="w-20">
+                                <label className="block text-[10px] text-stone-400 mb-1">Ед. изм.</label>
+                                <select
+                                  value={item.unit}
+                                  onChange={e => {
+                                    const unit = e.target.value as RecipeItemUnit;
+                                    setEditableRecipeItems(prev =>
+                                      prev.map((it, i) => (i === idx ? { ...it, unit } : it))
+                                    );
+                                  }}
+                                  className="w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2 py-2 text-xs text-stone-100 outline-none"
+                                >
+                                  {RECIPE_ITEM_UNITS.map(u => (
+                                    <option key={u} value={u}>{u}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditableRecipeItems(prev => prev.filter((_, i) => i !== idx));
                                 }}
-                                className="w-full bg-stone-950 border border-stone-700 rounded-lg px-2 py-1 text-xs text-stone-100 text-center outline-none"
-                              />
+                                className="text-stone-500 hover:text-red-400 p-2 rounded-lg hover:bg-stone-800 transition shrink-0"
+                                title="Удалить строку"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
-                            <button
-                              onClick={() => {
-                                setEditableRecipeItems(prev => prev.filter((_, i) => i !== idx));
-                              }}
-                              className="text-stone-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-stone-800 transition mt-3"
-                              title="Удалить строку"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
                           </div>
                         ))}
                       </div>
 
                       <button
+                        type="button"
                         onClick={() => {
-                          const defaultIng = ingredients[0]?.id || 'ing-1';
-                          setEditableRecipeItems(prev => [...prev, { ingredientId: defaultIng, grossQty: 0.100, netQty: 0.100 }]);
+                          setEditableRecipeItems(prev => [
+                            ...prev,
+                            { name: '', quantity: 0, quantityInput: '', unit: 'г' }
+                          ]);
                         }}
-                        className="w-full bg-stone-900 hover:bg-stone-800 text-amber-400 border border-stone-700/80 py-2 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-2"
+                        className="w-full bg-stone-900 hover:bg-stone-800 text-amber-400 border border-stone-700/80 py-2.5 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-2"
                       >
                         <Plus className="w-4 h-4" />
-                        <span>Добавить ингредиент в ТТК</span>
+                        <span>Добавить продукт в ТТК</span>
                       </button>
                     </div>
                   ) : (
@@ -3025,24 +3191,23 @@ export default function App() {
                       <table className="w-full text-left text-xs">
                         <thead className="bg-stone-950 text-stone-400 border-b border-stone-800">
                           <tr>
-                            <th className="p-3">Ингредиент</th>
-                            <th className="p-3">Брутто (на {desiredTotalYield} кг)</th>
-                            <th className="p-3">Нетто (на {desiredTotalYield} кг)</th>
+                            <th className="p-3">Продукт</th>
+                            <th className="p-3">Вес (на {desiredTotalYield} кг)</th>
                             <th className="p-3 text-right">Стоимость</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-stone-800 text-stone-200">
                           {selectedRecipe.items.map((it, idx) => {
-                            const ing = ingredients.find(i => i.id === it.ingredientId);
-                            const net = it.netQty * scaleMult;
-                            const gross = it.grossQty * scaleMult;
-                            const costItem = ing ? ing.costPerUnit * net : 0;
+                            const qty = getRecipeItemQty(it) * scaleMult;
+                            const unit = getRecipeItemUnit(it);
+                            const baseCost = calculateRecipeItemCost(it);
                             return (
                               <tr key={idx}>
-                                <td className="p-3 font-medium text-white">{ing ? ing.name : 'Неизвестно'}</td>
-                                <td className="p-3 text-stone-300">{gross.toFixed(3)} {ing?.unit || ''}</td>
-                                <td className="p-3 text-stone-300">{net.toFixed(3)} {ing?.unit || ''}</td>
-                                <td className="p-3 text-right font-bold text-amber-400">{Math.round(costItem)} ₽</td>
+                                <td className="p-3 font-medium text-white">{getRecipeItemName(it)}</td>
+                                <td className="p-3 text-stone-300 font-mono">{formatWeightNumber(qty)} {unit}</td>
+                                <td className="p-3 text-right font-bold text-amber-400">
+                                  {baseCost !== null ? `${Math.round(baseCost * scaleMult)} ₽` : <span className="text-stone-500 font-normal">—</span>}
+                                </td>
                               </tr>
                             );
                           })}
@@ -3155,8 +3320,18 @@ export default function App() {
                 shelfLifeHours: parseInt(formData.get('shelfLifeHours') as string) || 48,
                 imageUrl: '/src/assets/images/pelmeni_dumplings_1794987230090.jpg',
                 items: [
-                  { ingredientId: ingredients[0]?.id || 'ing-1', grossQty: 0.5, netQty: 0.45 },
-                  { ingredientId: ingredients[1]?.id || 'ing-2', grossQty: 0.2, netQty: 0.2 }
+                  {
+                    ingredientId: ingredients[0]?.id,
+                    name: ingredients[0]?.name || 'Мука пшеничная в/с',
+                    quantity: 0.45,
+                    unit: ingredients[0]?.unit || 'кг',
+                  },
+                  {
+                    ingredientId: ingredients[1]?.id,
+                    name: ingredients[1]?.name || 'Масло сливочное 82.5%',
+                    quantity: 0.2,
+                    unit: ingredients[1]?.unit || 'кг',
+                  }
                 ],
                 steps: [
                   '1. Подготовить все необходимые ингредиенты из расчета на 1 кг готовой продукции.',

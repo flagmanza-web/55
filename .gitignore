@@ -1,8 +1,14 @@
 node_modules/
 build/
 dist/
+dev-dist/
+server.js
 coverage/
 .DS_Store
 *.log
 .env*
 !.env.example
+android/.gradle/
+android/app/build/
+android/app/src/main/assets/public/
+android/capacitor-cordova-android-plugins/
