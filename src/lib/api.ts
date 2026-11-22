@@ -4,7 +4,15 @@ export const DEFAULT_PUBLISHED_SERVER_URL =
 const STORAGE_KEY_API_BASE = 'cp_api_base_url';
 
 export function normalizeServerUrl(url: string): string {
-  return url.trim().replace(/\/+$/, '');
+  const trimmed = url.trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed);
+    const cleanedPath = parsed.pathname.replace(/\/api(\/.*)?$/i, '').replace(/\/+$/, '');
+    return `${parsed.origin}${cleanedPath}`;
+  } catch {
+    return trimmed.replace(/\/api(\/.*)?$/i, '').replace(/\/+$/, '');
+  }
 }
 
 export function isCapacitorNativeRuntime(): boolean {
@@ -88,5 +96,41 @@ export async function parseApiJsonResponse<T = Record<string, unknown>>(
     return JSON.parse(text) as T;
   } catch {
     throw new Error(`Ошибка разбора ответа сервера (HTTP ${res.status}).`);
+  }
+}
+
+export async function fetchApiJson<T = Record<string, unknown>>(
+  path: string,
+  init?: RequestInit
+): Promise<T> {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const primaryUrl = resolveApiUrl(normalizedPath);
+  const isCustomExternalBase = primaryUrl !== normalizedPath && !isCapacitorNativeRuntime();
+
+  const tryFetch = async (url: string): Promise<Response> => {
+    const res = await fetch(url, init);
+    if (res.status === 404 || res.status === 502 || res.status === 503) {
+      await new Promise(resolve => setTimeout(resolve, 450));
+      return fetch(url, init);
+    }
+    return res;
+  };
+
+  try {
+    const res = await tryFetch(primaryUrl);
+    if (
+      isCustomExternalBase &&
+      (res.status === 404 || !(res.headers.get('content-type') || '').includes('application/json'))
+    ) {
+      const localRes = await tryFetch(normalizedPath);
+      return await parseApiJsonResponse<T>(localRes);
+    }
+    return await parseApiJsonResponse<T>(res);
+  } catch (err) {
+    if (isCustomExternalBase) {
+      const localRes = await tryFetch(normalizedPath);
+      return await parseApiJsonResponse<T>(localRes);
+    }
+    throw err;
   }
 }

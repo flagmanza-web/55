@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -182,10 +182,27 @@ async function startServer() {
   });
 
   const parseJsonSafely = <T,>(raw: string, fallback: T): T => {
-    const cleaned = raw.replace(/```json/g, '').replace(/```/g, '').trim();
+    const cleaned = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
     try {
       return JSON.parse(cleaned) as T;
     } catch {
+      const objStart = cleaned.indexOf('{');
+      const objEnd = cleaned.lastIndexOf('}');
+      const arrStart = cleaned.indexOf('[');
+      const arrEnd = cleaned.lastIndexOf(']');
+      const candidate =
+        Array.isArray(fallback) && arrStart >= 0 && arrEnd > arrStart
+          ? cleaned.slice(arrStart, arrEnd + 1)
+          : objStart >= 0 && objEnd > objStart
+            ? cleaned.slice(objStart, objEnd + 1)
+            : '';
+      if (candidate) {
+        try {
+          return JSON.parse(candidate) as T;
+        } catch {
+          return fallback;
+        }
+      }
       return fallback;
     }
   };
@@ -203,6 +220,9 @@ async function startServer() {
         return res.status(400).json({ error: 'Изображение не передано.' });
       }
 
+      const safeMimeType =
+        typeof mimeType === 'string' && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
+
       const ai = createGeminiClient(apiKey);
 
       const response = await generateWithRetry(ai, {
@@ -213,29 +233,65 @@ async function startServer() {
             parts: [
               {
                 inlineData: {
-                  mimeType: mimeType || 'image/jpeg',
-                  data: imageBase64
-                }
+                  mimeType: safeMimeType,
+                  data: imageBase64,
+                },
               },
               {
-                text: `Распознай рецепт, блюдо или технологическую карту с этого изображения/скриншота. Верни результат СТРОГО в виде валидного JSON объекта со следующей структурой:
-{
-  "name": "Название блюда",
-  "category": "Выпечка" | "Горячие блюда" | "Супы" | "Каши" | "Салаты" | "Десерты" | "Напитки",
-  "yieldQty": 1,
-  "yieldUnit": "кг" | "шт" | "л",
-  "prepTimeMin": 45,
-  "sellingPrice": 600,
-  "shelfLifeHours": 48,
-  "steps": ["Шаг 1...", "Шаг 2..."]
-}
-Если какая-то информация на изображении отсутствует, заполни ее разумными профессиональными данными для кулинарного магазина.`
-              }
-            ]
-          }
+                text: `Ты — опытный инженер-технолог общепита. Внимательно изучи это изображение/скриншот (ТТК, рецепт из книги/сайта, таблица или заметка) и извлеки технологическую карту блюда.
+Верни результат СТРОГО по JSON-схеме:
+1. name — точное название блюда с изображения.
+2. category — строго одна из категорий: "Выпечка", "Горячие блюда", "Супы", "Каши", "Салаты", "Десерты", "Напитки".
+3. items — ОБЯЗАТЕЛЬНО распознай КАЖДЫЙ продукт/ингредиент из рецепта на скриншоте с его количеством (нетто/вес) и единицей измерения.
+   - Используй единицы измерения строго из списка: "кг", "гр" (не "г"), "шт", "л", "мл", "банка".
+   - Если на скриншоте явно указан общий выход или порции с весом (например, "Выход: 500 г" или "Выход 2 кг"), по возможности пересчитай граммовки ингредиентов пропорционально на 1 кг готового блюда. Если общий выход не указан — оставь точные веса и единицы из рецепта как есть.
+   - НИКОГДА не подставляй вымышленные базовые продукты вроде муки или масла, если их нет в этом блюде! Если это фото готового блюда без текста, укажи реальные характерные ингредиенты именно этого блюда (на 1 кг).
+4. steps — массив шагов приготовления на русском языке.
+5. yieldQty: 1, yieldUnit: "кг", prepTimeMin, sellingPrice (в рублях за 1 кг), shelfLifeHours.`,
+              },
+            ],
+          },
         ],
         config: {
           responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING, description: 'Название блюда' },
+              category: {
+                type: Type.STRING,
+                description:
+                  'Категория: Выпечка, Горячие блюда, Супы, Каши, Салаты, Десерты или Напитки',
+              },
+              yieldQty: { type: Type.NUMBER },
+              yieldUnit: { type: Type.STRING },
+              prepTimeMin: { type: Type.NUMBER },
+              sellingPrice: { type: Type.NUMBER },
+              shelfLifeHours: { type: Type.NUMBER },
+              items: {
+                type: Type.ARRAY,
+                description: 'Список ингредиентов рецепта',
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING, description: 'Наименование продукта' },
+                    quantity: { type: Type.NUMBER, description: 'Вес или количество' },
+                    unit: {
+                      type: Type.STRING,
+                      description: 'Единица измерения: кг, гр, шт, л, мл или банка',
+                    },
+                  },
+                  required: ['name', 'quantity', 'unit'],
+                },
+              },
+              steps: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+                description: 'Технология приготовления по шагам',
+              },
+            },
+            required: ['name', 'category', 'items', 'steps'],
+          },
         },
       });
 
@@ -363,6 +419,14 @@ async function startServer() {
 
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'API route not found' });
+  });
+
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.path.startsWith('/api')) {
+      const status = typeof err?.status === 'number' ? err.status : 500;
+      return res.status(status).json({ error: err?.message || 'Ошибка обработки запроса на сервере' });
+    }
+    return next(err);
   });
 
   if (isProduction) {

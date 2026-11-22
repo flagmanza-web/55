@@ -41,12 +41,15 @@ import {
   ChevronDown,
   ArrowLeft,
   X,
-  Paperclip
+  Paperclip,
+  Copy,
+  ListPlus
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import {
   DEFAULT_PUBLISHED_SERVER_URL,
+  fetchApiJson,
   getEffectiveApiBaseUrl,
   normalizeServerUrl,
   parseApiJsonResponse,
@@ -58,21 +61,29 @@ import {
 interface Ingredient {
   id: string;
   name: string;
-  unit: 'кг' | 'г' | 'л' | 'мл' | 'шт';
+  unit: 'кг' | 'гр' | 'л' | 'мл' | 'шт' | 'банка';
   costPerUnit: number; // руб за единицу
   stockQty: number;
   minStock: number;
   supplier: string;
 }
 
-type RecipeItemUnit = 'кг' | 'г' | 'шт' | 'л' | 'мл';
-const RECIPE_ITEM_UNITS: RecipeItemUnit[] = ['кг', 'г', 'шт', 'л', 'мл'];
+type RecipeItemUnit = 'кг' | 'гр' | 'шт' | 'л' | 'мл' | 'банка';
+const RECIPE_ITEM_UNITS: RecipeItemUnit[] = ['кг', 'гр', 'шт', 'л', 'мл', 'банка'];
+
+const normalizeUnit = (unit: unknown, fallback: RecipeItemUnit = 'кг'): RecipeItemUnit => {
+  if (unit === 'г') return 'гр';
+  if (typeof unit === 'string' && (RECIPE_ITEM_UNITS as readonly string[]).includes(unit)) {
+    return unit as RecipeItemUnit;
+  }
+  return fallback;
+};
 
 interface RecipeItem {
   ingredientId?: string; // необязательная привязка к складу для авторасчета цены
   name: string;          // название продукта (вручную или из склада)
   quantity: number;      // вес / количество на 1 кг выхода
-  unit: RecipeItemUnit;  // кг, г, шт, л, мл
+  unit: RecipeItemUnit;  // кг, гр, шт, л, мл, банка
   grossQty?: number;     // устаревшее поле для миграции
   netQty?: number;       // устаревшее поле для миграции
 }
@@ -199,7 +210,6 @@ const INITIAL_RECIPES: Recipe[] = [
     prepTimeMin: 90,
     sellingPrice: 750,
     shelfLifeHours: 72,
-    imageUrl: '/src/assets/images/pelmeni_dumplings_1794987230090.jpg',
     items: [
       { ingredientId: 'ing-1', name: 'Мука пшеничная в/с', quantity: 0.500, unit: 'кг' },
       { ingredientId: 'ing-3', name: 'Говядина (мякоть)', quantity: 0.300, unit: 'кг' },
@@ -222,7 +232,6 @@ const INITIAL_RECIPES: Recipe[] = [
     prepTimeMin: 180,
     sellingPrice: 1400,
     shelfLifeHours: 48,
-    imageUrl: '/src/assets/images/napoleon_cake_1794987229773.jpg',
     items: [
       { ingredientId: 'ing-1', name: 'Мука пшеничная в/с', quantity: 0.400, unit: 'кг' },
       { ingredientId: 'ing-2', name: 'Масло сливочное 82.5%', quantity: 0.350, unit: 'кг' },
@@ -246,7 +255,6 @@ const INITIAL_RECIPES: Recipe[] = [
     prepTimeMin: 60,
     sellingPrice: 980,
     shelfLifeHours: 24,
-    imageUrl: '/src/assets/images/quiche_salmon_1794987230129.jpg',
     items: [
       { ingredientId: 'ing-1', name: 'Мука пшеничная в/с', quantity: 0.280, unit: 'кг' },
       { ingredientId: 'ing-2', name: 'Масло сливочное 82.5%', quantity: 0.150, unit: 'кг' },
@@ -377,7 +385,6 @@ export default function App() {
   const [recipeViewMode, setRecipeViewMode] = useState<'sheet' | 'cards'>('sheet');
   const [recipeSearchQuery, setRecipeSearchQuery] = useState<string>('');
   const [expandedTtkCategories, setExpandedTtkCategories] = useState<Record<string, boolean>>({});
-  const [defaultNewRecipeCategory, setDefaultNewRecipeCategory] = useState<RecipeCategory>('Горячие блюда');
   const [weeklyMenuSearchQuery, setWeeklyMenuSearchQuery] = useState<string>('');
 
   // Dish picker modal state for Weekly Menu
@@ -405,9 +412,14 @@ export default function App() {
   };
 
   // Persistent data states
-  const [ingredients, setIngredients] = useState<Ingredient[]>(() =>
-    safeParseStorage<Ingredient[]>('cp_ingredients', INITIAL_INGREDIENTS)
-  );
+  const [ingredients, setIngredients] = useState<Ingredient[]>(() => {
+    const parsed = safeParseStorage<Ingredient[]>('cp_ingredients', INITIAL_INGREDIENTS);
+    if (!Array.isArray(parsed)) return INITIAL_INGREDIENTS;
+    return parsed.map(ing => ({
+      ...ing,
+      unit: normalizeUnit(ing.unit, 'кг'),
+    }));
+  });
 
   const [recipes, setRecipes] = useState<Recipe[]>(() => {
     const parsed = safeParseStorage<any[]>('cp_recipes', INITIAL_RECIPES);
@@ -415,7 +427,6 @@ export default function App() {
     return parsed.map((r: any) => ({
       ...r,
       category: normalizeCategory(r.category || 'Горячие блюда'),
-      imageUrl: typeof r.imageUrl === 'string' && r.imageUrl.startsWith('blob:') ? undefined : r.imageUrl,
       items: Array.isArray(r.items)
         ? r.items.map((rawItem: any): RecipeItem => {
             const matchedIng = rawItem?.ingredientId
@@ -425,10 +436,7 @@ export default function App() {
               typeof rawItem?.name === 'string' && rawItem.name.trim()
                 ? rawItem.name.trim()
                 : matchedIng?.name || 'Продукт';
-            const candidateUnit = rawItem?.unit || matchedIng?.unit || 'кг';
-            const unit: RecipeItemUnit = (RECIPE_ITEM_UNITS as readonly string[]).includes(candidateUnit)
-              ? (candidateUnit as RecipeItemUnit)
-              : 'кг';
+            const unit = normalizeUnit(rawItem?.unit || matchedIng?.unit, 'кг');
             const quantity =
               typeof rawItem?.quantity === 'number'
                 ? rawItem.quantity
@@ -520,7 +528,6 @@ export default function App() {
   });
 
   // Loading states
-  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isParsingPhoto, setIsParsingPhoto] = useState(false);
   const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(false);
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
@@ -537,12 +544,11 @@ export default function App() {
     reader.onload = async () => {
       const base64String = (reader.result as string).split(',')[1];
       try {
-        const res = await fetch(resolveApiUrl('/api/gemini/parse-financial-report'), {
+        const data = await fetchApiJson<{ financials?: any; error?: string }>('/api/gemini/parse-financial-report', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ imageBase64: base64String, mimeType: file.type })
         });
-        const data = await parseApiJsonResponse<{ financials?: any; error?: string }>(res);
         if (data.financials) {
           if (data.financials.revenue && data.financials.revenue > 0) {
             setMonthlyRevenue(data.financials.revenue);
@@ -623,15 +629,168 @@ export default function App() {
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
   const [recipeToDelete, setRecipeToDelete] = useState<Recipe | null>(null);
   const [isEditingRecipeItems, setIsEditingRecipeItems] = useState(false);
+  const [isNewRecipeDraft, setIsNewRecipeDraft] = useState(false);
   const [editableRecipeItems, setEditableRecipeItems] = useState<EditableRecipeItem[]>([]);
-  const [isNewRecipeModalOpen, setIsNewRecipeModalOpen] = useState(false);
+  const [editableRecipeMeta, setEditableRecipeMeta] = useState<{
+    name: string;
+    category: RecipeCategory;
+    sellingPrice: string;
+    prepTimeMin: string;
+    shelfLifeHours: string;
+    stepsText: string;
+  }>({
+    name: '',
+    category: 'Горячие блюда',
+    sellingPrice: '600',
+    prepTimeMin: '30',
+    shelfLifeHours: '48',
+    stepsText: '',
+  });
+  const [isBulkPasteOpen, setIsBulkPasteOpen] = useState(false);
+  const [bulkPasteText, setBulkPasteText] = useState('');
+  const ttkProductInputRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const pendingFocusRowRef = useRef<number | null>(null);
   const [isNewIngredientModalOpen, setIsNewIngredientModalOpen] = useState(false);
   const [isNewExpenseModalOpen, setIsNewExpenseModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (pendingFocusRowRef.current !== null) {
+      const targetIdx = pendingFocusRowRef.current;
+      pendingFocusRowRef.current = null;
+      const el = ttkProductInputRefs.current[targetIdx];
+      if (el) el.focus();
+    }
+  }, [editableRecipeItems.length]);
+
+  const openRecipeModal = (recipe: Recipe, startInEdit = false) => {
+    setSelectedRecipe(recipe);
+    setIsNewRecipeDraft(false);
+    setDesiredTotalYield(1);
+    setIsEditingRecipeItems(startInEdit);
+    setIsBulkPasteOpen(false);
+    setBulkPasteText('');
+    setEditableRecipeItems(
+      recipe.items.length > 0
+        ? toEditableItems(recipe.items)
+        : [{ name: '', quantity: 0, quantityInput: '', unit: 'гр' }]
+    );
+    setEditableRecipeMeta({
+      name: recipe.name,
+      category: recipe.category,
+      sellingPrice: String(recipe.sellingPrice || 0),
+      prepTimeMin: String(recipe.prepTimeMin || 30),
+      shelfLifeHours: String(recipe.shelfLifeHours || 48),
+      stepsText: (recipe.steps || []).join('\n'),
+    });
+  };
+
+  const openNewRecipeEditor = (category: RecipeCategory = 'Горячие блюда') => {
+    const draft: Recipe = {
+      id: `rec-draft-${Date.now()}`,
+      name: '',
+      category,
+      yieldQty: 1,
+      yieldUnit: 'кг',
+      prepTimeMin: 30,
+      sellingPrice: 600,
+      shelfLifeHours: 48,
+      items: [],
+      steps: [],
+    };
+    setSelectedRecipe(draft);
+    setIsNewRecipeDraft(true);
+    setDesiredTotalYield(1);
+    setIsEditingRecipeItems(true);
+    setIsBulkPasteOpen(false);
+    setBulkPasteText('');
+    setEditableRecipeItems([{ name: '', quantity: 0, quantityInput: '', unit: 'гр' }]);
+    setEditableRecipeMeta({
+      name: '',
+      category,
+      sellingPrice: '600',
+      prepTimeMin: '30',
+      shelfLifeHours: '48',
+      stepsText: '',
+    });
+  };
+
+  const handleDuplicateRecipe = (recipe: Recipe) => {
+    const cloned: Recipe = {
+      ...recipe,
+      id: `rec-${Date.now()}`,
+      name: `${recipe.name} (копия)`,
+      items: recipe.items.map(it => ({ ...it })),
+      steps: [...(recipe.steps || [])],
+    };
+    setRecipes(prev => [cloned, ...prev]);
+    setExpandedTtkCategories(prev => ({ ...prev, [cloned.category]: true }));
+    openRecipeModal(cloned, true);
+    showNotice('success', `Создана копия ТТК «${cloned.name}» — можно сразу изменить состав.`);
+  };
+
+  const parseBulkRecipeLines = (rawText: string): EditableRecipeItem[] => {
+    const mapTokenToUnit = (rawUnit?: string): RecipeItemUnit => {
+      if (!rawUnit) return 'гр';
+      const u = rawUnit.toLowerCase().replace(/\.$/, '');
+      if (u === 'кг' || u === 'kg') return 'кг';
+      if (u === 'гр' || u === 'г' || u === 'g') return 'гр';
+      if (u === 'шт') return 'шт';
+      if (u === 'л' || u === 'l') return 'л';
+      if (u === 'мл' || u === 'ml') return 'мл';
+      if (u.startsWith('бан') || u === 'б') return 'банка';
+      return 'гр';
+    };
+
+    const rows: EditableRecipeItem[] = [];
+    const lines = rawText
+      .split(/\r?\n/)
+      .map(l => l.trim().replace(/^([•*—–-]|\d+[.)])\s*/, ''))
+      .filter(Boolean);
+
+    for (const line of lines) {
+      let name = line;
+      let qty = 0;
+      let unit: RecipeItemUnit = 'гр';
+
+      // Pattern 1: "Колбаса докторская 250 гр" / "Молоко 3.2% - 0,5 л" / "Горошек 1 банка"
+      const endMatch = line.match(
+        /^(.*?)(?:[\s\-—:=;\t]+)(\d+(?:[.,]\d+)?)\s*(кг|kg|гр|г|g|шт|л|l|мл|ml|банка|банки|банок|бан|б)?\.?$/i
+      );
+      if (endMatch && endMatch[1].trim()) {
+        name = endMatch[1].replace(/[\s\-—:=;]+$/, '').trim();
+        qty = parseFloat(endMatch[2].replace(',', '.')) || 0;
+        unit = mapTokenToUnit(endMatch[3]);
+      } else {
+        // Pattern 2: "250 гр Колбаса докторская"
+        const startMatch = line.match(
+          /^(\d+(?:[.,]\d+)?)\s*(кг|kg|гр|г|g|шт|л|l|мл|ml|банка|банки|банок|бан|б)?\.?(?:[\s\-—:=;\t]+)(.+)$/i
+        );
+        if (startMatch && startMatch[3].trim()) {
+          qty = parseFloat(startMatch[1].replace(',', '.')) || 0;
+          unit = mapTokenToUnit(startMatch[2]);
+          name = startMatch[3].trim();
+        }
+      }
+
+      const matched = ingredients.find(
+        ing => ing.name.trim().toLowerCase() === name.toLowerCase()
+      );
+      rows.push({
+        ...(matched ? { ingredientId: matched.id } : {}),
+        name,
+        quantity: qty,
+        quantityInput: qty > 0 ? String(qty) : '',
+        unit,
+      });
+    }
+    return rows;
+  };
 
   const handleDeleteRecipe = (recipe: Recipe) => {
     setRecipes(prev => prev.filter(r => r.id !== recipe.id));
     if (selectedRecipe?.id === recipe.id) {
       setSelectedRecipe(null);
+      setIsNewRecipeDraft(false);
     }
     setRecipeToDelete(null);
   };
@@ -817,10 +976,10 @@ export default function App() {
   };
 
   const getRecipeItemUnit = (item: RecipeItem): RecipeItemUnit => {
-    if (item.unit && (RECIPE_ITEM_UNITS as readonly string[]).includes(item.unit)) {
-      return item.unit;
+    if (item.unit) {
+      return normalizeUnit(item.unit, findIngredientForItem(item)?.unit || 'кг');
     }
-    return findIngredientForItem(item)?.unit || 'кг';
+    return normalizeUnit(findIngredientForItem(item)?.unit, 'кг');
   };
 
   const getRecipeItemQty = (item: RecipeItem): number => {
@@ -836,11 +995,13 @@ export default function App() {
   };
 
   const convertUnitQty = (qty: number, fromUnit: RecipeItemUnit, toUnit: Ingredient['unit']): number | null => {
-    if (fromUnit === toUnit) return qty;
-    if (fromUnit === 'г' && toUnit === 'кг') return qty / 1000;
-    if (fromUnit === 'кг' && toUnit === 'г') return qty * 1000;
-    if (fromUnit === 'мл' && toUnit === 'л') return qty / 1000;
-    if (fromUnit === 'л' && toUnit === 'мл') return qty * 1000;
+    const from = normalizeUnit(fromUnit);
+    const to = normalizeUnit(toUnit);
+    if (from === to) return qty;
+    if (from === 'гр' && to === 'кг') return qty / 1000;
+    if (from === 'кг' && to === 'гр') return qty * 1000;
+    if (from === 'мл' && to === 'л') return qty / 1000;
+    if (from === 'л' && to === 'мл') return qty * 1000;
     return null;
   };
 
@@ -936,7 +1097,7 @@ export default function App() {
       };
 
       if (aiMode === 'gemini') {
-        const res = await fetch(resolveApiUrl('/api/gemini/advisor'), {
+        const data = await fetchApiJson<{ result?: string; error?: string }>('/api/gemini/advisor', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -950,8 +1111,6 @@ export default function App() {
             })),
           }),
         });
-
-        const data = await parseApiJsonResponse<{ result?: string; error?: string }>(res);
         if (data.error) {
           setAiChat(prev => [...prev, { role: 'assistant', text: `Ошибка Gemini: ${data.error}`, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
         } else {
@@ -995,99 +1154,146 @@ export default function App() {
     }
   };
 
-  // Generate recipe photo handler
-  const handleGenerateRecipePhoto = async (recipe: Recipe) => {
-    setIsGeneratingImage(true);
-    try {
-      await new Promise(r => setTimeout(r, 1500));
-      const sampleImages = [
-        '/src/assets/images/pelmeni_dumplings_1794987230090.jpg',
-        '/src/assets/images/napoleon_cake_1794987229773.jpg',
-        '/src/assets/images/quiche_salmon_1794987230129.jpg'
-      ];
-      const randomImg = sampleImages[Math.floor(Math.random() * sampleImages.length)];
-      
-      const updatedRecipes = recipes.map(r => r.id === recipe.id ? { ...r, imageUrl: randomImg } : r);
-      setRecipes(updatedRecipes);
-      setSelectedRecipe({ ...recipe, imageUrl: randomImg });
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsGeneratingImage(false);
-    }
-  };
+  const prepareImageForUpload = (file: File): Promise<{ base64: string; mimeType: string }> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Не удалось прочитать файл изображения.'));
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        const fallbackMime = file.type && file.type.startsWith('image/') ? file.type : 'image/jpeg';
+        const fallbackBase64 = dataUrl.split(',')[1] || '';
+
+        const img = new Image();
+        img.onload = () => {
+          const maxDim = 1600;
+          const { width, height } = img;
+          const needsResize = Math.max(width, height) > maxDim || file.size > 900 * 1024;
+          if (!needsResize) {
+            resolve({ base64: fallbackBase64, mimeType: fallbackMime });
+            return;
+          }
+          const scale = Math.min(1, maxDim / Math.max(width, height));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(width * scale));
+          canvas.height = Math.max(1, Math.round(height * scale));
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve({ base64: fallbackBase64, mimeType: fallbackMime });
+            return;
+          }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const compressedUrl = canvas.toDataURL('image/jpeg', 0.88);
+          resolve({
+            base64: compressedUrl.split(',')[1] || fallbackBase64,
+            mimeType: 'image/jpeg',
+          });
+        };
+        img.onerror = () => resolve({ base64: fallbackBase64, mimeType: fallbackMime });
+        img.src = dataUrl;
+      };
+      reader.readAsDataURL(file);
+    });
 
   // Handle parse recipe from photo/screenshot
   const handleFileUploadForRecipe = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
 
     setIsParsingPhoto(true);
     try {
-      const reader = new FileReader();
-      reader.onload = async () => {
-        try {
-          const dataUrl = reader.result as string;
-          const base64String = dataUrl.split(',')[1];
-          const mimeType = file.type;
+      const { base64: base64String, mimeType } = await prepareImageForUpload(file);
 
-          const response = await fetch(resolveApiUrl('/api/gemini/parse-recipe'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ imageBase64: base64String, mimeType })
-          });
+      const data = await fetchApiJson<{ recipe?: any; error?: string }>('/api/gemini/parse-recipe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64: base64String, mimeType })
+      });
+      if (data.error) {
+        showNotice('error', `Ошибка распознавания: ${data.error}`);
+      } else if (data.recipe) {
+        const parsed = data.recipe;
+        const rawItemsList = Array.isArray(parsed.items)
+          ? parsed.items
+          : Array.isArray(parsed.ingredients)
+            ? parsed.ingredients
+            : [];
 
-          const data = await parseApiJsonResponse<{ recipe?: any; error?: string }>(response);
-          if (data.error) {
-            showNotice('error', `Ошибка распознавания: ${data.error}`);
-          } else if (data.recipe) {
-            const parsed = data.recipe;
-            const newRecipe: Recipe = {
-              id: `rec-${Date.now()}`,
-              name: parsed.name || 'Блюдо по фото',
-              category: normalizeCategory(parsed.category || 'Горячие блюда'),
-              yieldQty: 1, // стандарт на 1 кг
-              yieldUnit: 'кг',
-              prepTimeMin: parsed.prepTimeMin || 40,
-              sellingPrice: parsed.sellingPrice || 600,
-              shelfLifeHours: parsed.shelfLifeHours || 48,
-              imageUrl: dataUrl.length < 250000 ? dataUrl : undefined,
-              items: [
-                {
-                  ingredientId: ingredients[0]?.id,
-                  name: ingredients[0]?.name || 'Мука пшеничная в/с',
-                  quantity: 0.45,
-                  unit: ingredients[0]?.unit || 'кг',
-                },
-                {
-                  ingredientId: ingredients[1]?.id,
-                  name: ingredients[1]?.name || 'Масло сливочное 82.5%',
-                  quantity: 0.2,
-                  unit: ingredients[1]?.unit || 'кг',
-                }
-              ],
-              steps: parsed.steps || ['1. Подготовить ингредиенты по фото.', '2. Приготовить согласно техпроцессу.']
+        const mapParsedUnit = (rawUnit: unknown): RecipeItemUnit => {
+          const u = String(rawUnit || '').trim().toLowerCase().replace(/\.$/, '');
+          if (u === 'кг' || u === 'kg') return 'кг';
+          if (u === 'гр' || u === 'г' || u === 'g') return 'гр';
+          if (u === 'шт') return 'шт';
+          if (u === 'л' || u === 'l') return 'л';
+          if (u === 'мл' || u === 'ml') return 'мл';
+          if (u.startsWith('бан') || u === 'б') return 'банка';
+          return normalizeUnit(rawUnit, 'гр');
+        };
+
+        const parsedItems: RecipeItem[] = rawItemsList
+          .map((rawIt: any): RecipeItem | null => {
+            if (typeof rawIt === 'string') {
+              const rows = parseBulkRecipeLines(rawIt);
+              if (rows.length === 0) return null;
+              const r = rows[0];
+              return {
+                ...(r.ingredientId ? { ingredientId: r.ingredientId } : {}),
+                name: r.name,
+                quantity: r.quantity,
+                unit: r.unit,
+              };
+            }
+            const name = String(rawIt?.name || rawIt?.product || rawIt?.ingredient || '').trim();
+            if (!name) return null;
+            const rawQty = rawIt?.quantity ?? rawIt?.qty ?? rawIt?.weight ?? rawIt?.netQty ?? rawIt?.grossQty ?? 0;
+            const qtyNum = typeof rawQty === 'number'
+              ? rawQty
+              : parseFloat(String(rawQty).replace(',', '.')) || 0;
+            const unit = mapParsedUnit(rawIt?.unit);
+            const matched = ingredients.find(
+              ing => ing.name.trim().toLowerCase() === name.toLowerCase()
+            );
+            return {
+              ...(matched ? { ingredientId: matched.id } : {}),
+              name,
+              quantity: Math.max(0, qtyNum),
+              unit,
             };
+          })
+          .filter((item: RecipeItem | null): item is RecipeItem => item !== null);
 
-            setRecipes(prev => [newRecipe, ...prev]);
-            setExpandedTtkCategories(prev => ({ ...prev, [newRecipe.category]: true }));
-            setIsPhotoModalOpen(false);
-            showNotice('success', `Рецепт «${newRecipe.name}» добавлен в ТТК (на 1 кг)!`);
-          }
-        } catch (innerErr: any) {
-          showNotice('error', `Ошибка: ${innerErr.message || 'не удалось обработать ответ'}`);
-        } finally {
-          setIsParsingPhoto(false);
+        const parsedSteps = Array.isArray(parsed.steps)
+          ? parsed.steps.map((s: any) => String(s || '').trim()).filter(Boolean)
+          : [];
+
+        const newRecipe: Recipe = {
+          id: `rec-${Date.now()}`,
+          name: String(parsed.name || '').trim() || 'Блюдо по фото',
+          category: normalizeCategory(parsed.category || 'Горячие блюда'),
+          yieldQty: 1, // стандарт на 1 кг
+          yieldUnit: 'кг',
+          prepTimeMin: Number(parsed.prepTimeMin) || 40,
+          sellingPrice: Number(parsed.sellingPrice) || 600,
+          shelfLifeHours: Number(parsed.shelfLifeHours) || 48,
+          items: parsedItems,
+          steps: parsedSteps.length > 0
+            ? parsedSteps
+            : ['1. Подготовить ингредиенты.', '2. Приготовить согласно техпроцессу.']
+        };
+
+        setRecipes(prev => [newRecipe, ...prev]);
+        setExpandedTtkCategories(prev => ({ ...prev, [newRecipe.category]: true }));
+        setIsPhotoModalOpen(false);
+        openRecipeModal(newRecipe, true);
+        if (parsedItems.length > 0) {
+          showNotice('success', `Распознана ТТК «${newRecipe.name}» (${parsedItems.length} поз.) — проверьте и нажмите «Сохранить ТТК»!`);
+        } else {
+          showNotice('success', `Блюдо «${newRecipe.name}» создано, но состав на фото не найден — введите или вставьте продукты списком.`);
         }
-      };
-      reader.onerror = () => {
-        showNotice('error', 'Не удалось прочитать файл изображения.');
-        setIsParsingPhoto(false);
-      };
-      reader.readAsDataURL(file);
+      }
     } catch (err: any) {
-      console.error(err);
-      showNotice('error', `Ошибка: ${err.message}`);
+      showNotice('error', `Ошибка: ${err.message || 'не удалось распознать изображение'}`);
+    } finally {
       setIsParsingPhoto(false);
     }
   };
@@ -1105,13 +1311,11 @@ export default function App() {
           const base64String = (reader.result as string).split(',')[1];
           const mimeType = file.type;
 
-          const response = await fetch(resolveApiUrl('/api/gemini/parse-receipt-items'), {
+          const data = await fetchApiJson<{ items?: any[]; error?: string }>('/api/gemini/parse-receipt-items', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ imageBase64: base64String, mimeType })
           });
-
-          const data = await parseApiJsonResponse<{ items?: any[]; error?: string }>(response);
           if (data.error) {
             showNotice('error', `Ошибка распознавания чека: ${data.error}`);
           } else if (data.items && Array.isArray(data.items)) {
@@ -1139,7 +1343,7 @@ export default function App() {
                 updatedIngredients.push({
                   id: `ing-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
                   name: pi.name || 'Товар из чека',
-                  unit: pi.unit || 'кг',
+                  unit: normalizeUnit(pi.unit, 'кг'),
                   costPerUnit: pi.costPerUnit || 100,
                   stockQty: pi.stockQty || 1,
                   minStock: 5,
@@ -1165,7 +1369,6 @@ export default function App() {
       };
       reader.readAsDataURL(file);
     } catch (err: any) {
-      console.error(err);
       showNotice('error', `Ошибка: ${err.message}`);
       setIsParsingReceipt(false);
     }
@@ -1655,7 +1858,7 @@ export default function App() {
                   <span>По фото</span>
                 </button>
                 <button 
-                  onClick={() => setIsNewRecipeModalOpen(true)}
+                  onClick={() => openNewRecipeEditor()}
                   className="bg-amber-500 hover:bg-amber-400 text-stone-950 px-4 py-2 rounded-xl font-semibold text-xs transition flex items-center gap-2 shadow-lg shadow-amber-500/20"
                 >
                   <Plus className="w-4 h-4" />
@@ -1782,10 +1985,7 @@ export default function App() {
                                 <p className="text-xs text-stone-400">В категории «{cat}» пока нет технологических карт.</p>
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    setDefaultNewRecipeCategory(cat);
-                                    setIsNewRecipeModalOpen(true);
-                                  }}
+                                  onClick={() => openNewRecipeEditor(cat)}
                                   className="inline-flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 px-3.5 py-2 rounded-xl text-xs font-semibold transition"
                                 >
                                   <Plus className="w-3.5 h-3.5" />
@@ -1852,15 +2052,24 @@ export default function App() {
                                               <td className="p-4 text-center align-middle">
                                                 <div className="flex flex-col gap-2 items-center justify-center">
                                                   <button
-                                                    onClick={() => {
-                                                      setSelectedRecipe(recipe);
-                                                      setDesiredTotalYield(1);
-                                                      setIsEditingRecipeItems(false);
-                                                      setEditableRecipeItems(toEditableItems(recipe.items));
-                                                    }}
+                                                    onClick={() => openRecipeModal(recipe, false)}
                                                     className="w-full bg-stone-800 hover:bg-stone-700 text-stone-200 px-3 py-2 rounded-xl text-xs font-semibold transition text-center shadow-sm"
                                                   >
                                                     Открыть ТТК
+                                                  </button>
+                                                  <button
+                                                    onClick={() => openRecipeModal(recipe, true)}
+                                                    className="w-full bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 px-3 py-2 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1.5 shadow-sm"
+                                                  >
+                                                    <Edit3 className="w-3.5 h-3.5" />
+                                                    <span>Заполнить / Изменить</span>
+                                                  </button>
+                                                  <button
+                                                    onClick={() => handleDuplicateRecipe(recipe)}
+                                                    className="w-full bg-stone-800 hover:bg-stone-700 text-stone-300 px-3 py-2 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1.5 shadow-sm"
+                                                  >
+                                                    <Copy className="w-3.5 h-3.5" />
+                                                    <span>Копия</span>
                                                   </button>
                                                   <button
                                                     onClick={() => {
@@ -1897,20 +2106,14 @@ export default function App() {
 
                                   return (
                                     <div key={recipe.id} className="bg-stone-900 border border-stone-800 hover:border-stone-700 rounded-2xl overflow-hidden flex flex-col justify-between transition shadow-sm">
-                                      {recipe.imageUrl ? (
-                                        <div className="h-48 w-full overflow-hidden relative bg-stone-950">
-                                          <img src={recipe.imageUrl} alt={recipe.name} className="w-full h-full object-cover" />
-                                          <span className="absolute top-3 left-3 text-[11px] font-semibold px-2.5 py-1 bg-stone-950/80 backdrop-blur-md text-amber-400 rounded-full border border-amber-500/20">
-                                            {recipe.category}
-                                          </span>
-                                        </div>
-                                      ) : (
-                                        <div className="p-5 pb-0">
-                                          <span className="text-[11px] font-semibold px-2.5 py-1 bg-amber-500/10 text-amber-400 rounded-full border border-amber-500/20">
-                                            {recipe.category}
-                                          </span>
-                                        </div>
-                                      )}
+                                      <div className="p-5 pb-0 flex items-center justify-between gap-2">
+                                        <span className="text-[11px] font-semibold px-2.5 py-1 bg-amber-500/10 text-amber-400 rounded-full border border-amber-500/20">
+                                          {recipe.category}
+                                        </span>
+                                        <span className="text-[11px] text-stone-400 font-mono">
+                                          {recipe.items.length} прод.
+                                        </span>
+                                      </div>
 
                                       <div className="p-5">
                                         <h3 className="font-bold text-white text-base mb-2">{recipe.name}</h3>
@@ -1942,15 +2145,24 @@ export default function App() {
 
                                           <div className="flex gap-2">
                                             <button 
-                                              onClick={() => { 
-                                                setSelectedRecipe(recipe); 
-                                                setDesiredTotalYield(1); 
-                                                setIsEditingRecipeItems(false);
-                                                setEditableRecipeItems(toEditableItems(recipe.items));
-                                              }}
+                                              onClick={() => openRecipeModal(recipe, false)}
                                               className="flex-1 bg-stone-800 hover:bg-stone-700 text-stone-200 py-2 rounded-xl text-xs font-semibold transition text-center"
                                             >
-                                              Открыть ТТК
+                                              Открыть
+                                            </button>
+                                            <button 
+                                              onClick={() => openRecipeModal(recipe, true)}
+                                              className="bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 px-2.5 py-2 rounded-xl transition"
+                                              title="Редактировать ТТК"
+                                            >
+                                              <Edit3 className="w-4 h-4" />
+                                            </button>
+                                            <button 
+                                              onClick={() => handleDuplicateRecipe(recipe)}
+                                              className="bg-stone-800 hover:bg-stone-700 text-stone-300 px-2.5 py-2 rounded-xl transition"
+                                              title="Дублировать ТТК"
+                                            >
+                                              <Copy className="w-4 h-4" />
                                             </button>
                                             <button 
                                               onClick={() => {
@@ -2807,7 +3019,7 @@ export default function App() {
               <button onClick={() => setIsPhotoModalOpen(false)} className="text-stone-400 hover:text-white">✕</button>
             </div>
             <p className="text-xs text-stone-300 leading-relaxed">
-              Загрузите фото страницы рецепта из кулинарной книги, скриншот меню или снимок блюда. ИИ (Gemini Vision) распознает название, категорию, выход и технологию приготовления (с расчетом на 1 кг).
+              Загрузите скриншот ТТК, фото страницы рецепта из книги или снимок блюда. ИИ (Gemini Vision) распознает название, категорию, состав продуктов с весом и шаги приготовления (на 1 кг).
             </p>
 
             <div className="border-2 border-dashed border-stone-700 hover:border-amber-500/50 rounded-2xl p-6 text-center transition bg-stone-950 relative">
@@ -2924,109 +3136,258 @@ export default function App() {
         </div>
       )}
 
-      {/* RECIPE DETAIL / TTK MODAL WITH 1 KG BASIS & RECALCULATION */}
+      {/* UNIFIED TTK VIEW / CREATE / EDIT MODAL (NO PHOTOS, FAST INPUT) */}
       {selectedRecipe && (() => {
-        const baseYield = selectedRecipe.yieldQty || 1; // 1 kg
+        const baseYield = selectedRecipe.yieldQty || 1;
         const scaleMult = desiredTotalYield > 0 ? desiredTotalYield / baseYield : 1;
 
-        const costPerKg = calculateRecipeCost(selectedRecipe); // стоимость на 1 кг
-        const fc = getRecipeFoodCostPercent(selectedRecipe);
+        const cleanDraftItems: RecipeItem[] = editableRecipeItems
+          .filter(it => {
+            const parsedQty = parseFloat((it.quantityInput || '').replace(',', '.')) || 0;
+            return it.name.trim() !== '' || parsedQty > 0;
+          })
+          .map(it => {
+            const parsedQty = Math.max(0, parseFloat((it.quantityInput || '').replace(',', '.')) || 0);
+            const trimmedName = it.name.trim() || 'Продукт';
+            const matched = ingredients.find(
+              ing => ing.name.trim().toLowerCase() === trimmedName.toLowerCase()
+            );
+            return {
+              ...(matched ? { ingredientId: matched.id } : {}),
+              name: trimmedName,
+              quantity: parsedQty,
+              unit: it.unit,
+            };
+          });
+
+        const liveRecipeForCost: Recipe = isEditingRecipeItems
+          ? {
+              ...selectedRecipe,
+              name: editableRecipeMeta.name.trim() || 'Новое блюдо',
+              category: editableRecipeMeta.category,
+              sellingPrice: parseFloat(editableRecipeMeta.sellingPrice.replace(',', '.')) || 0,
+              items: cleanDraftItems,
+            }
+          : selectedRecipe;
+
+        const costPerKg = calculateRecipeCost(liveRecipeForCost);
+        const fc = getRecipeFoodCostPercent(liveRecipeForCost);
         const scaledCost = costPerKg * scaleMult;
-        const scaledPrice = selectedRecipe.sellingPrice * scaleMult;
+        const scaledPrice = liveRecipeForCost.sellingPrice * scaleMult;
+
+        const handleSaveFullRecipe = () => {
+          const finalName = editableRecipeMeta.name.trim();
+          if (!finalName) {
+            showNotice('error', 'Укажите название блюда перед сохранением.');
+            return;
+          }
+          const finalPrice = Math.max(0, parseFloat(editableRecipeMeta.sellingPrice.replace(',', '.')) || 0);
+          const finalPrep = Math.max(1, parseInt(editableRecipeMeta.prepTimeMin, 10) || 30);
+          const finalShelf = Math.max(1, parseInt(editableRecipeMeta.shelfLifeHours, 10) || 48);
+          const finalSteps = editableRecipeMeta.stepsText
+            .split(/\r?\n/)
+            .map(s => s.trim())
+            .filter(Boolean);
+
+          const savedRecipe: Recipe = {
+            id: isNewRecipeDraft ? `rec-${Date.now()}` : selectedRecipe.id,
+            name: finalName,
+            category: editableRecipeMeta.category,
+            yieldQty: 1,
+            yieldUnit: 'кг',
+            prepTimeMin: finalPrep,
+            sellingPrice: finalPrice,
+            shelfLifeHours: finalShelf,
+            items: cleanDraftItems,
+            steps: finalSteps.length > 0 ? finalSteps : ['Подготовить продукты и приготовить согласно техпроцессу.'],
+          };
+
+          if (isNewRecipeDraft) {
+            setRecipes(prev => [savedRecipe, ...prev]);
+          } else {
+            setRecipes(prev => prev.map(r => (r.id === savedRecipe.id ? savedRecipe : r)));
+          }
+          setExpandedTtkCategories(prev => ({ ...prev, [savedRecipe.category]: true }));
+          setSelectedRecipe(savedRecipe);
+          setIsNewRecipeDraft(false);
+          setIsEditingRecipeItems(false);
+          setIsBulkPasteOpen(false);
+          showNotice('success', isNewRecipeDraft ? `ТТК «${savedRecipe.name}» создана!` : `ТТК «${savedRecipe.name}» сохранена!`);
+        };
+
+        const handleApplyBulkPaste = () => {
+          const parsedRows = parseBulkRecipeLines(bulkPasteText);
+          if (parsedRows.length === 0) {
+            showNotice('error', 'Вставьте хотя бы одну строку, например: Картофель 300 гр');
+            return;
+          }
+          setEditableRecipeItems(prev => {
+            const nonEmptyExisting = prev.filter(
+              it => it.name.trim() !== '' || (parseFloat((it.quantityInput || '').replace(',', '.')) || 0) > 0
+            );
+            return [...nonEmptyExisting, ...parsedRows];
+          });
+          setBulkPasteText('');
+          setIsBulkPasteOpen(false);
+          showNotice('success', `Добавлено строк: ${parsedRows.length}`);
+        };
 
         return (
-          <div className="fixed inset-0 bg-stone-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-stone-900 border border-stone-800 rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
-              <div className="p-5 bg-stone-950 border-b border-stone-800 flex justify-between items-center">
-                <div>
-                  <span className="text-[11px] px-2.5 py-0.5 bg-amber-500/20 text-amber-400 rounded-full font-semibold">
-                    {selectedRecipe.category}
-                  </span>
-                  <h3 className="text-lg font-bold text-white mt-1">{selectedRecipe.name}</h3>
+          <div className="fixed inset-0 bg-stone-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-2 sm:p-4">
+            <div className="bg-stone-900 border border-stone-800 rounded-2xl max-w-2xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+              {/* Modal Header */}
+              <div className="px-4 py-3.5 sm:px-5 sm:py-4 bg-stone-950 border-b border-stone-800 flex justify-between items-center gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] px-2.5 py-0.5 bg-amber-500/20 text-amber-400 rounded-full font-semibold">
+                      {isEditingRecipeItems ? editableRecipeMeta.category : selectedRecipe.category}
+                    </span>
+                    <span className="text-[11px] text-stone-400">База: на 1 кг</span>
+                  </div>
+                  <h3 className="text-base sm:text-lg font-bold text-white mt-1 truncate">
+                    {isNewRecipeDraft
+                      ? (editableRecipeMeta.name.trim() || 'Новая технологическая карта (ТТК)')
+                      : (isEditingRecipeItems ? editableRecipeMeta.name || selectedRecipe.name : selectedRecipe.name)}
+                  </h3>
                 </div>
-                <button 
-                  onClick={() => setSelectedRecipe(null)}
-                  className="text-stone-400 hover:text-white p-1.5 rounded-lg bg-stone-800"
-                >
-                  ✕
-                </button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {!isNewRecipeDraft && !isEditingRecipeItems && (
+                    <button
+                      type="button"
+                      onClick={() => handleDuplicateRecipe(selectedRecipe)}
+                      className="text-stone-300 hover:text-white px-2.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-xs font-medium flex items-center gap-1 transition"
+                      title="Создать копию ТТК"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Копия</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedRecipe(null);
+                      setIsNewRecipeDraft(false);
+                      setIsEditingRecipeItems(false);
+                    }}
+                    className="text-stone-400 hover:text-white p-1.5 rounded-lg bg-stone-800"
+                    aria-label="Закрыть"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
-              <div className="p-6 overflow-y-auto space-y-6 flex-1 text-xs sm:text-sm">
-                
-                {/* Recipe Image & Generation Button */}
-                <div className="bg-stone-950 p-4 rounded-2xl border border-stone-800 flex flex-col sm:flex-row items-center gap-4">
-                  {selectedRecipe.imageUrl ? (
-                    <div className="w-full sm:w-40 h-32 rounded-xl overflow-hidden bg-stone-900 flex-shrink-0 relative">
-                      <img src={selectedRecipe.imageUrl} alt={selectedRecipe.name} className="w-full h-full object-cover" />
+              {/* Scrollable Body */}
+              <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1 text-xs sm:text-sm">
+                {/* Editable Dish Metadata when Editing or Creating */}
+                {isEditingRecipeItems && (
+                  <div className="bg-stone-950 p-3.5 rounded-xl border border-stone-800 space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div className="sm:col-span-2">
+                        <label className="block text-[10px] text-stone-400 mb-1">Название блюда *</label>
+                        <input
+                          type="text"
+                          autoFocus={isNewRecipeDraft}
+                          value={editableRecipeMeta.name}
+                          onChange={e => setEditableRecipeMeta(prev => ({ ...prev, name: e.target.value }))}
+                          placeholder="Например: Салат Оливье"
+                          className="w-full bg-stone-900 border border-stone-700 focus:border-amber-500 rounded-lg px-3 py-2 text-stone-100 text-xs outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-stone-400 mb-1">Категория</label>
+                        <select
+                          value={editableRecipeMeta.category}
+                          onChange={e =>
+                            setEditableRecipeMeta(prev => ({
+                              ...prev,
+                              category: e.target.value as RecipeCategory,
+                            }))
+                          }
+                          className="w-full bg-stone-900 border border-stone-700 focus:border-amber-500 rounded-lg px-2.5 py-2 text-stone-100 text-xs outline-none"
+                        >
+                          {RECIPE_CATEGORIES.map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
-                  ) : (
-                    <div className="w-full sm:w-40 h-32 rounded-xl bg-stone-900 border border-stone-800 flex flex-col items-center justify-center text-stone-500 flex-shrink-0">
-                      <ImageIcon className="w-8 h-8 mb-1 opacity-50" />
-                      <span className="text-[10px]">Нет фото</span>
-                    </div>
-                  )}
 
-                  <div className="flex-1 space-y-2 text-center sm:text-left">
-                    <h4 className="font-semibold text-white">Визуализация ТТК (Фото блюда)</h4>
-                    <p className="text-stone-400 text-xs">
-                      Создайте профессиональное фото готового блюда с помощью встроенного инструмента генерации изображений.
-                    </p>
-                    <button
-                      onClick={() => handleGenerateRecipePhoto(selectedRecipe)}
-                      disabled={isGeneratingImage}
-                      className="bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-stone-950 font-semibold px-4 py-2 rounded-xl text-xs transition inline-flex items-center gap-2 shadow-md shadow-amber-500/20"
-                    >
-                      {isGeneratingImage ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>Генерация фото...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="w-4 h-4" />
-                          <span>Сгенерировать фото блюда</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Desired Total Yield Recalculation Input (Basis 1 kg) */}
-                <div className="bg-stone-950 p-4 rounded-xl border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                  <div>
-                    <div className="font-semibold text-white flex items-center gap-1.5">
-                      <Calculator className="w-4 h-4 text-amber-500" />
-                      <span>Пересчет граммовок (База ТТК: на 1 кг)</span>
+                    <div className="grid grid-cols-3 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] text-stone-400 mb-1">Цена/1 кг (₽)</label>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={editableRecipeMeta.sellingPrice}
+                          onChange={e => setEditableRecipeMeta(prev => ({ ...prev, sellingPrice: e.target.value }))}
+                          placeholder="700"
+                          className="w-full bg-stone-900 border border-stone-700 focus:border-amber-500 rounded-lg px-2.5 py-2 text-amber-400 font-semibold text-xs outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-stone-400 mb-1">Время (мин)</label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={editableRecipeMeta.prepTimeMin}
+                          onChange={e => setEditableRecipeMeta(prev => ({ ...prev, prepTimeMin: e.target.value }))}
+                          placeholder="30"
+                          className="w-full bg-stone-900 border border-stone-700 focus:border-amber-500 rounded-lg px-2.5 py-2 text-stone-100 text-xs outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-stone-400 mb-1">Срок годн. (ч)</label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={editableRecipeMeta.shelfLifeHours}
+                          onChange={e => setEditableRecipeMeta(prev => ({ ...prev, shelfLifeHours: e.target.value }))}
+                          placeholder="48"
+                          className="w-full bg-stone-900 border border-stone-700 focus:border-amber-500 rounded-lg px-2.5 py-2 text-stone-100 text-xs outline-none"
+                        />
+                      </div>
                     </div>
-                    <div className="text-stone-400 text-xs mt-0.5">Ниже указаны граммовки на 1 кг. Введите нужный общий вес готовой партии:</div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0.1"
-                      value={desiredTotalYield}
-                      onChange={e => setDesiredTotalYield(parseFloat(e.target.value) || 0)}
-                      className="w-28 bg-stone-900 border border-stone-700 text-amber-400 font-bold rounded-xl px-3 py-2 text-sm text-center outline-none focus:border-amber-500"
-                    />
-                    <span className="text-stone-300 font-semibold text-xs">кг</span>
+                )}
+
+                {/* Desired Total Yield Recalculation Input (only in View mode) */}
+                {!isEditingRecipeItems && (
+                  <div className="bg-stone-950 p-3.5 rounded-xl border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+                    <div>
+                      <div className="font-semibold text-white text-xs sm:text-sm flex items-center gap-1.5">
+                        <Calculator className="w-4 h-4 text-amber-500" />
+                        <span>Пересчет на партию (база: 1 кг)</span>
+                      </div>
+                      <div className="text-stone-400 text-[11px] mt-0.5">Введите нужный вес готовой продукции:</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0.1"
+                        value={desiredTotalYield}
+                        onChange={e => setDesiredTotalYield(parseFloat(e.target.value) || 0)}
+                        className="w-24 bg-stone-900 border border-stone-700 text-amber-400 font-bold rounded-xl px-3 py-1.5 text-sm text-center outline-none focus:border-amber-500"
+                      />
+                      <span className="text-stone-300 font-semibold text-xs">кг</span>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Financial Summary */}
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="bg-stone-950 p-3 rounded-xl border border-stone-800 text-center">
-                    <div className="text-[10px] text-stone-400 uppercase">Себестоимость партии</div>
-                    <div className="text-base font-bold text-stone-100">{Math.round(scaledCost)} ₽</div>
+                <div className="grid grid-cols-3 gap-2.5">
+                  <div className="bg-stone-950 p-2.5 rounded-xl border border-stone-800 text-center">
+                    <div className="text-[10px] text-stone-400 uppercase">Себест. (склад)</div>
+                    <div className="text-sm sm:text-base font-bold text-stone-100">{Math.round(scaledCost)} ₽</div>
                   </div>
-                  <div className="bg-stone-950 p-3 rounded-xl border border-stone-800 text-center">
-                    <div className="text-[10px] text-stone-400 uppercase">Цена продажи партии</div>
-                    <div className="text-base font-bold text-amber-400">{Math.round(scaledPrice)} ₽</div>
+                  <div className="bg-stone-950 p-2.5 rounded-xl border border-stone-800 text-center">
+                    <div className="text-[10px] text-stone-400 uppercase">Цена продажи</div>
+                    <div className="text-sm sm:text-base font-bold text-amber-400">{Math.round(scaledPrice)} ₽</div>
                   </div>
-                  <div className="bg-stone-950 p-3 rounded-xl border border-stone-800 text-center">
+                  <div className="bg-stone-950 p-2.5 rounded-xl border border-stone-800 text-center">
                     <div className="text-[10px] text-stone-400 uppercase">Фудкост / Маржа</div>
-                    <div className={`text-base font-bold ${fc > 32 ? (fc > 38 ? 'text-red-400' : 'text-amber-400') : 'text-emerald-400'}`}>
+                    <div className={`text-sm sm:text-base font-bold ${fc > 32 ? (fc > 38 ? 'text-red-400' : 'text-amber-400') : 'text-emerald-400'}`}>
                       {fc}% ({Math.round(scaledPrice - scaledCost)} ₽)
                     </div>
                   </div>
@@ -3034,223 +3395,338 @@ export default function App() {
 
                 {renderFoodCostProgressBar(fc)}
 
-                {/* Ingredients Table with Editable Rows */}
+                {/* Products Section */}
                 <div>
-                  <div className="flex flex-wrap justify-between items-center gap-2 mb-3">
-                    <h4 className="font-semibold text-white">
-                      {isEditingRecipeItems 
-                        ? 'Редактирование строк ТТК (база на 1 кг):' 
-                        : `Раскладка продуктов (на ${desiredTotalYield} кг готовой продукции):`}
+                  <div className="flex flex-wrap justify-between items-center gap-2 mb-2.5">
+                    <h4 className="font-semibold text-white text-xs sm:text-sm">
+                      {isEditingRecipeItems
+                        ? 'Продукты на 1 кг готовой продукции:'
+                        : `Раскладка продуктов (на ${desiredTotalYield} кг):`}
                     </h4>
-                    <button
-                      onClick={() => {
-                        if (isEditingRecipeItems) {
-                          const cleanedItems: RecipeItem[] = editableRecipeItems
-                            .filter(it => {
-                              const parsedQty = parseFloat((it.quantityInput || '').replace(',', '.')) || 0;
-                              return it.name.trim() !== '' || parsedQty > 0;
-                            })
-                            .map(it => {
-                              const parsedQty = Math.max(0, parseFloat((it.quantityInput || '').replace(',', '.')) || 0);
-                              const trimmedName = it.name.trim() || 'Продукт';
-                              const matched = ingredients.find(
-                                ing => ing.name.trim().toLowerCase() === trimmedName.toLowerCase()
-                              );
-                              return {
-                                ...(matched ? { ingredientId: matched.id } : {}),
-                                name: trimmedName,
-                                quantity: parsedQty,
-                                unit: it.unit,
-                              };
-                            });
-                          const updatedRecipes = recipes.map(r => r.id === selectedRecipe.id ? { ...r, items: cleanedItems } : r);
-                          setRecipes(updatedRecipes);
-                          setSelectedRecipe({ ...selectedRecipe, items: cleanedItems });
-                          setIsEditingRecipeItems(false);
-                        } else {
-                          setEditableRecipeItems(toEditableItems(selectedRecipe.items));
-                          setIsEditingRecipeItems(true);
-                        }
-                      }}
-                      className="bg-stone-800 hover:bg-stone-700 text-amber-400 border border-amber-500/30 px-3 py-1.5 rounded-xl font-semibold text-xs transition flex items-center gap-1.5"
-                    >
-                      <Edit3 className="w-3.5 h-3.5" />
-                      <span>{isEditingRecipeItems ? 'Сохранить ТТК' : 'Редактировать строки'}</span>
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {isEditingRecipeItems && (
+                        <button
+                          type="button"
+                          onClick={() => setIsBulkPasteOpen(prev => !prev)}
+                          className={`px-2.5 py-1.5 rounded-xl font-semibold text-xs transition flex items-center gap-1.5 border ${
+                            isBulkPasteOpen
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                              : 'bg-stone-800 hover:bg-stone-700 text-stone-200 border-stone-700'
+                          }`}
+                        >
+                          <ListPlus className="w-3.5 h-3.5" />
+                          <span>Вставить списком</span>
+                        </button>
+                      )}
+                      {!isEditingRecipeItems && (
+                        <button
+                          type="button"
+                          onClick={() => openRecipeModal(selectedRecipe, true)}
+                          className="bg-stone-800 hover:bg-stone-700 text-amber-400 border border-amber-500/30 px-3 py-1.5 rounded-xl font-semibold text-xs transition flex items-center gap-1.5"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>Редактировать ТТК</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {isEditingRecipeItems ? (
-                    <div className="space-y-3 bg-stone-950 p-3 sm:p-4 rounded-xl border border-stone-800">
-                      <p className="text-[11px] text-stone-400">
-                        Введите продукт вручную (или выберите подсказку со склада), укажите вес на 1 кг готовой продукции и единицу измерения (кг, г, шт, л, мл).
-                      </p>
+                    <div className="space-y-2.5 bg-stone-950 p-3 rounded-xl border border-stone-800">
+                      {/* Optional Bulk Text Paste Helper */}
+                      {isBulkPasteOpen && (
+                        <div className="bg-stone-900 border border-amber-500/30 rounded-xl p-3 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-semibold text-amber-300">
+                              Быстрая вставка продуктов списком (по 1 строке)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setIsBulkPasteOpen(false)}
+                              className="text-stone-400 hover:text-white text-xs"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                          <textarea
+                            rows={4}
+                            value={bulkPasteText}
+                            onChange={e => setBulkPasteText(e.target.value)}
+                            placeholder={'Картофель отварной 300 гр\nКолбаса докторская 250 гр\nГорошек зелёный 1 банка\nЯйцо куриное 4 шт\nМайонез 0.15 кг'}
+                            className="w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg p-2.5 text-xs text-stone-100 outline-none resize-y"
+                          />
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={handleApplyBulkPaste}
+                              className="bg-amber-500 hover:bg-amber-400 text-stone-950 font-semibold px-3 py-1.5 rounded-lg text-xs transition"
+                            >
+                              Добавить из списка
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       <datalist id="ttk-ingredients-datalist">
                         {ingredients.map(ing => (
                           <option key={ing.id} value={ing.name} />
                         ))}
                       </datalist>
-                      <div className="space-y-2.5">
+
+                      {/* Desktop Column Header */}
+                      <div className="hidden sm:grid sm:grid-cols-[24px_1fr_92px_92px_32px] gap-2 px-2 text-[10px] text-stone-400 uppercase tracking-wider">
+                        <span>#</span>
+                        <span>Продукт</span>
+                        <span className="text-center">Вес</span>
+                        <span>Ед. изм.</span>
+                        <span></span>
+                      </div>
+
+                      <div className="space-y-1.5">
                         {editableRecipeItems.map((item, idx) => (
-                          <div key={idx} className="flex flex-col sm:flex-row sm:items-end gap-2 bg-stone-900 p-2.5 rounded-xl border border-stone-800">
-                            <div className="flex-1 min-w-0">
-                              <label className="block text-[10px] text-stone-400 mb-1">Продукт</label>
+                          <div
+                            key={idx}
+                            className="bg-stone-900 p-2 rounded-xl border border-stone-800 grid grid-cols-[1fr_auto] sm:grid-cols-[24px_1fr_92px_92px_32px] gap-1.5 sm:gap-2 items-center"
+                          >
+                            <span className="hidden sm:inline text-[11px] font-mono text-stone-500 text-center">
+                              {idx + 1}
+                            </span>
+                            <input
+                              ref={el => {
+                                ttkProductInputRefs.current[idx] = el;
+                              }}
+                              type="text"
+                              list="ttk-ingredients-datalist"
+                              value={item.name}
+                              placeholder={`Продукт ${idx + 1} (напр. Горошек)`}
+                              onChange={e => {
+                                const val = e.target.value;
+                                const matched = ingredients.find(
+                                  ing => ing.name.trim().toLowerCase() === val.trim().toLowerCase()
+                                );
+                                setEditableRecipeItems(prev =>
+                                  prev.map((it, i) =>
+                                    i === idx
+                                      ? {
+                                          ...it,
+                                          name: val,
+                                          ingredientId: matched?.id,
+                                          ...(matched && !it.name.trim() ? { unit: matched.unit } : {}),
+                                        }
+                                      : it
+                                  )
+                                );
+                              }}
+                              className="col-span-2 sm:col-span-1 w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2.5 py-1.5 text-stone-100 text-xs outline-none"
+                            />
+                            <div className="flex items-center gap-1.5 sm:contents">
                               <input
                                 type="text"
-                                list="ttk-ingredients-datalist"
-                                value={item.name}
-                                placeholder="Например: Колбаса докторская"
+                                inputMode="decimal"
+                                placeholder="Вес"
+                                value={item.quantityInput}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    const nextIdx = editableRecipeItems.length;
+                                    pendingFocusRowRef.current = nextIdx;
+                                    setEditableRecipeItems(prev => [
+                                      ...prev,
+                                      { name: '', quantity: 0, quantityInput: '', unit: item.unit || 'гр' },
+                                    ]);
+                                  }
+                                }}
                                 onChange={e => {
-                                  const val = e.target.value;
-                                  const matched = ingredients.find(
-                                    ing => ing.name.trim().toLowerCase() === val.trim().toLowerCase()
-                                  );
+                                  const raw = e.target.value;
+                                  const parsed = parseFloat(raw.replace(',', '.')) || 0;
                                   setEditableRecipeItems(prev =>
                                     prev.map((it, i) =>
-                                      i === idx
-                                        ? {
-                                            ...it,
-                                            name: val,
-                                            ingredientId: matched?.id,
-                                            ...(matched && !it.name.trim() ? { unit: matched.unit } : {}),
-                                          }
-                                        : it
+                                      i === idx ? { ...it, quantityInput: raw, quantity: parsed } : it
                                     )
                                   );
                                 }}
-                                className="w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2.5 py-2 text-stone-100 text-xs outline-none"
+                                className="flex-1 sm:flex-initial w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2 py-1.5 text-xs text-stone-100 text-center outline-none"
                               />
-                            </div>
-                            <div className="flex items-end gap-2 shrink-0">
-                              <div className="flex-1 sm:w-24">
-                                <label className="block text-[10px] text-stone-400 mb-1">Вес</label>
-                                <input
-                                  type="text"
-                                  inputMode="decimal"
-                                  placeholder="0"
-                                  value={item.quantityInput}
-                                  onChange={e => {
-                                    const raw = e.target.value;
-                                    const parsed = parseFloat(raw.replace(',', '.')) || 0;
-                                    setEditableRecipeItems(prev =>
-                                      prev.map((it, i) =>
-                                        i === idx ? { ...it, quantityInput: raw, quantity: parsed } : it
-                                      )
-                                    );
-                                  }}
-                                  className="w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2 py-2 text-xs text-stone-100 text-center outline-none"
-                                />
-                              </div>
-                              <div className="w-20">
-                                <label className="block text-[10px] text-stone-400 mb-1">Ед. изм.</label>
-                                <select
-                                  value={item.unit}
-                                  onChange={e => {
-                                    const unit = e.target.value as RecipeItemUnit;
-                                    setEditableRecipeItems(prev =>
-                                      prev.map((it, i) => (i === idx ? { ...it, unit } : it))
-                                    );
-                                  }}
-                                  className="w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2 py-2 text-xs text-stone-100 outline-none"
-                                >
-                                  {RECIPE_ITEM_UNITS.map(u => (
-                                    <option key={u} value={u}>{u}</option>
-                                  ))}
-                                </select>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEditableRecipeItems(prev => prev.filter((_, i) => i !== idx));
+                              <select
+                                value={item.unit}
+                                onChange={e => {
+                                  const unit = e.target.value as RecipeItemUnit;
+                                  setEditableRecipeItems(prev =>
+                                    prev.map((it, i) => (i === idx ? { ...it, unit } : it))
+                                  );
                                 }}
-                                className="text-stone-500 hover:text-red-400 p-2 rounded-lg hover:bg-stone-800 transition shrink-0"
-                                title="Удалить строку"
+                                className="w-24 sm:w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2 py-1.5 text-xs text-stone-100 outline-none"
                               >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
+                                {RECIPE_ITEM_UNITS.map(u => (
+                                  <option key={u} value={u}>{u}</option>
+                                ))}
+                              </select>
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditableRecipeItems(prev => {
+                                  const next = prev.filter((_, i) => i !== idx);
+                                  return next.length > 0
+                                    ? next
+                                    : [{ name: '', quantity: 0, quantityInput: '', unit: 'гр' }];
+                                });
+                              }}
+                              className="text-stone-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-stone-800 transition justify-self-end sm:justify-self-center"
+                              title="Удалить строку"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           </div>
                         ))}
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditableRecipeItems(prev => [
-                            ...prev,
-                            { name: '', quantity: 0, quantityInput: '', unit: 'г' }
-                          ]);
-                        }}
-                        className="w-full bg-stone-900 hover:bg-stone-800 text-amber-400 border border-stone-700/80 py-2.5 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-2"
-                      >
-                        <Plus className="w-4 h-4" />
-                        <span>Добавить продукт в ТТК</span>
-                      </button>
+                      <div className="flex items-center justify-between gap-2 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextIdx = editableRecipeItems.length;
+                            pendingFocusRowRef.current = nextIdx;
+                            setEditableRecipeItems(prev => [
+                              ...prev,
+                              { name: '', quantity: 0, quantityInput: '', unit: 'гр' }
+                            ]);
+                          }}
+                          className="flex-1 bg-stone-900 hover:bg-stone-800 text-amber-400 border border-stone-700/80 py-2 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1.5"
+                        >
+                          <Plus className="w-4 h-4" />
+                          <span>Добавить строку</span>
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-stone-500">
+                        Совет: нажмите Enter в поле «Вес», чтобы сразу перейти к следующей строке, или используйте «Вставить списком».
+                      </p>
                     </div>
                   ) : (
                     <div className="border border-stone-800 rounded-xl overflow-hidden">
-                      <table className="w-full text-left text-xs">
-                        <thead className="bg-stone-950 text-stone-400 border-b border-stone-800">
-                          <tr>
-                            <th className="p-3">Продукт</th>
-                            <th className="p-3">Вес (на {desiredTotalYield} кг)</th>
-                            <th className="p-3 text-right">Стоимость</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-stone-800 text-stone-200">
-                          {selectedRecipe.items.map((it, idx) => {
-                            const qty = getRecipeItemQty(it) * scaleMult;
-                            const unit = getRecipeItemUnit(it);
-                            const baseCost = calculateRecipeItemCost(it);
-                            return (
-                              <tr key={idx}>
-                                <td className="p-3 font-medium text-white">{getRecipeItemName(it)}</td>
-                                <td className="p-3 text-stone-300 font-mono">{formatWeightNumber(qty)} {unit}</td>
-                                <td className="p-3 text-right font-bold text-amber-400">
-                                  {baseCost !== null ? `${Math.round(baseCost * scaleMult)} ₽` : <span className="text-stone-500 font-normal">—</span>}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                      {selectedRecipe.items.length === 0 ? (
+                        <div className="p-5 text-center text-xs text-stone-400 space-y-2 bg-stone-950">
+                          <p>Список продуктов пока пуст.</p>
+                          <button
+                            type="button"
+                            onClick={() => openRecipeModal(selectedRecipe, true)}
+                            className="text-amber-400 hover:underline font-semibold"
+                          >
+                            + Заполнить продукты
+                          </button>
+                        </div>
+                      ) : (
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-stone-950 text-stone-400 border-b border-stone-800">
+                            <tr>
+                              <th className="p-3">Продукт</th>
+                              <th className="p-3">Вес (на {desiredTotalYield} кг)</th>
+                              <th className="p-3 text-right">Стоимость</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-stone-800 text-stone-200">
+                            {selectedRecipe.items.map((it, idx) => {
+                              const qty = getRecipeItemQty(it) * scaleMult;
+                              const unit = getRecipeItemUnit(it);
+                              const baseCost = calculateRecipeItemCost(it);
+                              return (
+                                <tr key={idx}>
+                                  <td className="p-3 font-medium text-white">{getRecipeItemName(it)}</td>
+                                  <td className="p-3 text-stone-300 font-mono">{formatWeightNumber(qty)} {unit}</td>
+                                  <td className="p-3 text-right font-bold text-amber-400">
+                                    {baseCost !== null ? `${Math.round(baseCost * scaleMult)} ₽` : <span className="text-stone-500 font-normal">—</span>}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
                     </div>
                   )}
                 </div>
 
                 {/* Steps */}
                 <div>
-                  <h4 className="font-semibold text-white mb-2">Технология приготовления:</h4>
-                  <ol className="space-y-2 text-stone-300 list-decimal list-inside bg-stone-950 p-4 rounded-xl border border-stone-800">
-                    {selectedRecipe.steps.map((step, idx) => (
-                      <li key={idx} className="leading-relaxed">{step}</li>
-                    ))}
-                  </ol>
+                  <h4 className="font-semibold text-white text-xs sm:text-sm mb-2">Технология приготовления:</h4>
+                  {isEditingRecipeItems ? (
+                    <textarea
+                      rows={3}
+                      value={editableRecipeMeta.stepsText}
+                      onChange={e => setEditableRecipeMeta(prev => ({ ...prev, stepsText: e.target.value }))}
+                      placeholder={'1. Подготовить и нарезать ингредиенты.\n2. Заправить и перемешать.\n3. Охладить и упаковать.'}
+                      className="w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-xl p-3 text-xs text-stone-200 outline-none resize-y"
+                    />
+                  ) : (
+                    <ol className="space-y-1.5 text-stone-300 list-decimal list-inside bg-stone-950 p-3.5 rounded-xl border border-stone-800 text-xs sm:text-sm">
+                      {selectedRecipe.steps.map((step, idx) => (
+                        <li key={idx} className="leading-relaxed">{step}</li>
+                      ))}
+                    </ol>
+                  )}
                 </div>
-
               </div>
 
-              <div className="p-4 bg-stone-950 border-t border-stone-800 flex flex-wrap items-center justify-between gap-2">
-                <button
-                  onClick={() => setRecipeToDelete(selectedRecipe)}
-                  className="bg-red-950/50 hover:bg-red-950/80 text-red-400 border border-red-900/50 px-3.5 py-2 rounded-xl font-semibold text-xs transition flex items-center gap-1.5"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  <span>Удалить ТТК</span>
-                </button>
+              {/* Sticky Footer */}
+              <div className="p-3.5 sm:p-4 bg-stone-950 border-t border-stone-800 flex flex-wrap items-center justify-between gap-2">
+                {!isNewRecipeDraft ? (
+                  <button
+                    type="button"
+                    onClick={() => setRecipeToDelete(selectedRecipe)}
+                    className="bg-red-950/50 hover:bg-red-950/80 text-red-400 border border-red-900/50 px-3 py-2 rounded-xl font-semibold text-xs transition flex items-center gap-1.5"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span className="hidden sm:inline">Удалить ТТК</span>
+                  </button>
+                ) : (
+                  <span className="text-[11px] text-stone-500">Новая ТТК (на 1 кг)</span>
+                )}
                 <div className="flex items-center gap-2 ml-auto">
-                  <button
-                    onClick={() => window.print()}
-                    className="bg-stone-800 hover:bg-stone-700 text-stone-200 px-4 py-2 rounded-xl font-semibold text-xs transition flex items-center gap-2"
-                  >
-                    <Printer className="w-4 h-4" />
-                    <span>Печать ТТК</span>
-                  </button>
-                  <button
-                    onClick={() => setSelectedRecipe(null)}
-                    className="bg-amber-500 hover:bg-amber-400 text-stone-950 px-5 py-2 rounded-xl font-semibold text-xs transition"
-                  >
-                    Закрыть
-                  </button>
+                  {isEditingRecipeItems ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (isNewRecipeDraft) {
+                            setSelectedRecipe(null);
+                            setIsNewRecipeDraft(false);
+                            setIsEditingRecipeItems(false);
+                          } else {
+                            openRecipeModal(selectedRecipe, false);
+                          }
+                        }}
+                        className="bg-stone-800 hover:bg-stone-700 text-stone-300 px-3.5 py-2 rounded-xl font-semibold text-xs transition"
+                      >
+                        Отмена
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveFullRecipe}
+                        className="bg-emerald-500 hover:bg-emerald-400 text-stone-950 px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-1.5 shadow-md shadow-emerald-500/20"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>{isNewRecipeDraft ? 'Создать и сохранить' : 'Сохранить ТТК'}</span>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => window.print()}
+                        className="bg-stone-800 hover:bg-stone-700 text-stone-200 px-3.5 py-2 rounded-xl font-semibold text-xs transition flex items-center gap-1.5"
+                      >
+                        <Printer className="w-4 h-4" />
+                        <span>Печать</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRecipe(null)}
+                        className="bg-amber-500 hover:bg-amber-400 text-stone-950 px-4 py-2 rounded-xl font-semibold text-xs transition"
+                      >
+                        Закрыть
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -3300,86 +3776,6 @@ export default function App() {
         </div>
       )}
 
-      {/* NEW RECIPE MODAL */}
-      {isNewRecipeModalOpen && (
-        <div className="fixed inset-0 bg-stone-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-stone-900 border border-stone-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl">
-            <h3 className="text-lg font-bold text-white mb-4">Создание ТТК (Граммовки на 1 кг)</h3>
-            <form onSubmit={e => {
-              e.preventDefault();
-              const form = e.currentTarget;
-              const formData = new FormData(form);
-              const newRec: Recipe = {
-                id: `rec-${Date.now()}`,
-                name: formData.get('name') as string,
-                category: formData.get('category') as any,
-                yieldQty: 1, // расчет строго на 1 кг
-                yieldUnit: 'кг',
-                prepTimeMin: parseInt(formData.get('prepTimeMin') as string) || 30,
-                sellingPrice: parseFloat(formData.get('sellingPrice') as string) || 700,
-                shelfLifeHours: parseInt(formData.get('shelfLifeHours') as string) || 48,
-                imageUrl: '/src/assets/images/pelmeni_dumplings_1794987230090.jpg',
-                items: [
-                  {
-                    ingredientId: ingredients[0]?.id,
-                    name: ingredients[0]?.name || 'Мука пшеничная в/с',
-                    quantity: 0.45,
-                    unit: ingredients[0]?.unit || 'кг',
-                  },
-                  {
-                    ingredientId: ingredients[1]?.id,
-                    name: ingredients[1]?.name || 'Масло сливочное 82.5%',
-                    quantity: 0.2,
-                    unit: ingredients[1]?.unit || 'кг',
-                  }
-                ],
-                steps: [
-                  '1. Подготовить все необходимые ингредиенты из расчета на 1 кг готовой продукции.',
-                  '2. Произвести первичную и тепловую обработку согласно техпроцессу.',
-                  '3. Оформить и охладить готовую продукцию до температуры хранения.'
-                ]
-              };
-              setRecipes(prev => [newRec, ...prev]);
-              setExpandedTtkCategories(prev => ({ ...prev, [newRec.category]: true }));
-              setIsNewRecipeModalOpen(false);
-            }} className="space-y-4 text-xs">
-              <div>
-                <label className="block text-stone-400 mb-1">Название блюда</label>
-                <input required name="name" placeholder="Например: Борщ классический" className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-stone-100 outline-none" />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-stone-400 mb-1">Категория</label>
-                  <select name="category" defaultValue={defaultNewRecipeCategory} className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-stone-100 outline-none">
-                    {RECIPE_CATEGORIES.map(cat => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-stone-400 mb-1">Цена за 1 кг (₽)</label>
-                  <input required name="sellingPrice" type="number" placeholder="700" className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-stone-100 outline-none" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-stone-400 mb-1">База расчета</label>
-                  <input disabled value="1 кг готовой продукции" className="w-full bg-stone-900 border border-stone-800 rounded-xl px-3 py-2 text-amber-400 font-semibold" />
-                </div>
-                <div>
-                  <label className="block text-stone-400 mb-1">Время (мин)</label>
-                  <input required name="prepTimeMin" type="number" defaultValue={45} className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-stone-100 outline-none" />
-                </div>
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={() => setIsNewRecipeModalOpen(false)} className="bg-stone-800 text-stone-300 px-4 py-2 rounded-xl">Отмена</button>
-                <button type="submit" className="bg-amber-500 text-stone-950 font-semibold px-5 py-2 rounded-xl">Создать ТТК</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
       {/* NEW INGREDIENT MODAL */}
       {isNewIngredientModalOpen && (
         <div className="fixed inset-0 bg-stone-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -3410,10 +3806,11 @@ export default function App() {
                   <label className="block text-stone-400 mb-1">Ед. измерения</label>
                   <select name="unit" className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-stone-100 outline-none">
                     <option value="кг">кг</option>
-                    <option value="г">г</option>
+                    <option value="гр">гр</option>
                     <option value="л">л</option>
                     <option value="мл">мл</option>
                     <option value="шт">шт</option>
+                    <option value="банка">банка</option>
                   </select>
                 </div>
                 <div>
@@ -3526,9 +3923,11 @@ export default function App() {
                   <label className="block text-stone-400 mb-1">Ед. изм.</label>
                   <select name="unit" className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-stone-100 outline-none">
                     <option value="кг">кг</option>
-                    <option value="г">г</option>
+                    <option value="гр">гр</option>
                     <option value="л">л</option>
+                    <option value="мл">мл</option>
                     <option value="шт">шт</option>
+                    <option value="банка">банка</option>
                   </select>
                 </div>
               </div>
@@ -3725,13 +4124,11 @@ export default function App() {
                         <p className="text-xs text-stone-400">В категории «{pickerCategory}» пока нет блюд в ТТК.</p>
                         <button
                           onClick={() => {
-                            if (pickerCategory) {
-                              setDefaultNewRecipeCategory(pickerCategory);
-                            }
+                            const cat = pickerCategory || 'Горячие блюда';
                             setActiveMenuRowId(null);
                             setPickerCategory(null);
                             setActiveTab('recipes');
-                            setIsNewRecipeModalOpen(true);
+                            openNewRecipeEditor(cat);
                           }}
                           className="text-xs text-amber-400 hover:underline font-semibold"
                         >
