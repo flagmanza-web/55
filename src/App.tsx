@@ -694,6 +694,8 @@ export default function App() {
     stepsText: '',
   });
   const [customTagInput, setCustomTagInput] = useState('');
+  const [draftYieldInput, setDraftYieldInput] = useState('1');
+  const [isCustomYieldManual, setIsCustomYieldManual] = useState(false);
   const [isBulkPasteOpen, setIsBulkPasteOpen] = useState(false);
   const [bulkPasteText, setBulkPasteText] = useState('');
   const [isSuggestingRecipeAi, setIsSuggestingRecipeAi] = useState(false);
@@ -716,9 +718,13 @@ export default function App() {
   }, [editableRecipeItems.length]);
 
   const openRecipeModal = (recipe: Recipe, startInEdit = false) => {
+    const initialYield = recipe.yieldQty && recipe.yieldQty > 0 ? recipe.yieldQty : 1;
+    const autoWeightKg = calculateItemsTotalWeightKg(recipe.items);
     setSelectedRecipe(recipe);
     setIsNewRecipeDraft(false);
-    setDesiredTotalYield(1);
+    setDesiredTotalYield(initialYield);
+    setDraftYieldInput(String(initialYield));
+    setIsCustomYieldManual(autoWeightKg > 0 && Math.abs(initialYield - autoWeightKg) > 0.005);
     setIsEditingRecipeItems(startInEdit);
     setIsBulkPasteOpen(false);
     setBulkPasteText('');
@@ -756,6 +762,8 @@ export default function App() {
     setSelectedRecipe(draft);
     setIsNewRecipeDraft(true);
     setDesiredTotalYield(1);
+    setDraftYieldInput('1');
+    setIsCustomYieldManual(false);
     setIsEditingRecipeItems(true);
     setIsBulkPasteOpen(false);
     setBulkPasteText('');
@@ -1259,6 +1267,18 @@ export default function App() {
     return ing.costPerUnit * converted;
   };
 
+  const calculateItemsTotalWeightKg = (items: RecipeItem[]): number => {
+    let totalKg = 0;
+    for (const item of items) {
+      const qty = getRecipeItemQty(item);
+      if (qty <= 0) continue;
+      const unit = getRecipeItemUnit(item);
+      if (unit === 'кг' || unit === 'л') totalKg += qty;
+      else if (unit === 'гр' || unit === 'мл') totalKg += qty / 1000;
+    }
+    return Math.round((totalKg + Number.EPSILON) * 1000) / 1000;
+  };
+
   const toEditableItems = (items: RecipeItem[]): EditableRecipeItem[] =>
     items.map(it => {
       const qty = getRecipeItemQty(it);
@@ -1271,7 +1291,7 @@ export default function App() {
       };
     });
 
-  const calculateRecipeCost = (recipe: Recipe) => {
+  const calculateRecipeBatchCost = (recipe: Recipe) => {
     let totalCost = 0;
     recipe.items.forEach(item => {
       const itemCost = calculateRecipeItemCost(item);
@@ -1279,7 +1299,13 @@ export default function App() {
         totalCost += itemCost;
       }
     });
-    return totalCost; // стоимость на 1 кг выхода
+    return totalCost;
+  };
+
+  const calculateRecipeCost = (recipe: Recipe) => {
+    const batchCost = calculateRecipeBatchCost(recipe);
+    const yieldKg = recipe.yieldQty && recipe.yieldQty > 0 ? recipe.yieldQty : 1;
+    return batchCost / yieldKg; // стоимость на 1 кг выхода
   };
 
   const getRecipeFoodCostPercent = (recipe: Recipe) => {
@@ -1512,11 +1538,20 @@ export default function App() {
           ? parsed.steps.map((s: any) => String(s || '').trim()).filter(Boolean)
           : [];
 
+        const autoParsedWeightKg = calculateItemsTotalWeightKg(parsedItems);
+        const parsedYieldRaw = Number(parsed.yieldQty);
+        const finalParsedYield =
+          Number.isFinite(parsedYieldRaw) && parsedYieldRaw > 0
+            ? Math.round((parsedYieldRaw + Number.EPSILON) * 1000) / 1000
+            : autoParsedWeightKg > 0
+              ? autoParsedWeightKg
+              : 1;
+
         const newRecipe: Recipe = {
           id: `rec-${Date.now()}`,
           name: String(parsed.name || '').trim() || 'Блюдо по фото',
           category: normalizeCategory(parsed.category || 'Горячие блюда'),
-          yieldQty: 1, // стандарт на 1 кг
+          yieldQty: finalParsedYield,
           yieldUnit: 'кг',
           prepTimeMin: Number(parsed.prepTimeMin) || 40,
           sellingPrice: Number(parsed.sellingPrice) || 600,
@@ -2331,7 +2366,9 @@ export default function App() {
                                           <thead className="bg-stone-950/80 text-stone-400 uppercase tracking-wider border-b border-stone-800">
                                             <tr>
                                               <th className="p-3.5 border-r border-stone-800 w-1/4">Блюдо / ТТК</th>
-                                              <th className="p-3.5 border-r border-stone-800 w-2/5">Раскладка продуктов (на 1 кг)</th>
+                                              <th className="p-3.5 border-r border-stone-800 w-2/5">
+                                                Раскладка продуктов (выход {formatWeightNumber(recipe.yieldQty || 1)} {recipe.yieldUnit})
+                                              </th>
                                               <th className="p-3.5 border-r border-stone-800 w-1/5">Вес</th>
                                               <th className="p-3.5 text-center w-36">Действия</th>
                                             </tr>
@@ -2344,6 +2381,9 @@ export default function App() {
                                                   <span className="text-[11px] px-2.5 py-0.5 bg-amber-500/10 text-amber-400 rounded-md border border-amber-500/20 font-semibold inline-block">
                                                     {recipe.category}
                                                   </span>
+                                                  <span className="text-[11px] px-2 py-0.5 bg-stone-800 text-stone-200 rounded-md border border-stone-700 font-mono inline-block">
+                                                    Выход: {formatWeightNumber(recipe.yieldQty || 1)} {recipe.yieldUnit}
+                                                  </span>
                                                   {normalizeRecipeTags(recipe.tags).map(tag => (
                                                     <span
                                                       key={tag}
@@ -2355,6 +2395,9 @@ export default function App() {
                                                 </div>
                                                 <div className="text-[11px] text-stone-400 space-y-1 bg-stone-900 p-2.5 rounded-xl border border-stone-800 mb-2">
                                                   <div>Себест/кг: <strong className="text-stone-200">{Math.round(cost)} ₽</strong></div>
+                                                  {(recipe.yieldQty || 1) !== 1 && (
+                                                    <div>За закладку ({formatWeightNumber(recipe.yieldQty)} кг): <strong className="text-stone-300">{Math.round(calculateRecipeBatchCost(recipe))} ₽</strong></div>
+                                                  )}
                                                   <div>Цена/кг: <strong className="text-amber-400">{recipe.sellingPrice} ₽</strong></div>
                                                   <div>Фудкост: <strong className={fc > 32 ? 'text-red-400' : 'text-emerald-400'}>{fc}%</strong></div>
                                                 </div>
@@ -2479,7 +2522,7 @@ export default function App() {
                                           </div>
                                         )}
                                         <div className="text-xs text-stone-400 space-y-1 mb-4">
-                                          <div>База ТТК: <strong className="text-amber-400">на 1 кг готовой продукции</strong></div>
+                                          <div>Выход ТТК: <strong className="text-amber-400">{formatWeightNumber(recipe.yieldQty || 1)} {recipe.yieldUnit}</strong></div>
                                           <div>Время приготовления: <strong>{recipe.prepTimeMin} мин</strong></div>
                                           <div>Срок годности: <strong>{recipe.shelfLifeHours} ч</strong></div>
                                         </div>
@@ -3755,9 +3798,6 @@ export default function App() {
 
       {/* UNIFIED TTK VIEW / CREATE / EDIT MODAL (NO PHOTOS, FAST INPUT) */}
       {selectedRecipe && (() => {
-        const baseYield = selectedRecipe.yieldQty || 1;
-        const scaleMult = desiredTotalYield > 0 ? desiredTotalYield / baseYield : 1;
-
         const cleanDraftItems: RecipeItem[] = editableRecipeItems
           .filter(it => {
             const parsedQty = parseFloat((it.quantityInput || '').replace(',', '.')) || 0;
@@ -3777,20 +3817,43 @@ export default function App() {
             };
           });
 
+        const autoSumWeightKg = calculateItemsTotalWeightKg(cleanDraftItems);
+        const parsedManualYieldRaw = parseFloat(draftYieldInput.replace(',', '.'));
+        const effectiveEditYield = isCustomYieldManual
+          ? (Number.isFinite(parsedManualYieldRaw) && parsedManualYieldRaw > 0
+              ? Math.round((parsedManualYieldRaw + Number.EPSILON) * 1000) / 1000
+              : autoSumWeightKg > 0
+                ? autoSumWeightKg
+                : 1)
+          : (autoSumWeightKg > 0
+              ? autoSumWeightKg
+              : (Number.isFinite(parsedManualYieldRaw) && parsedManualYieldRaw > 0
+                  ? Math.round((parsedManualYieldRaw + Number.EPSILON) * 1000) / 1000
+                  : 1));
+
+        const baseYield = isEditingRecipeItems
+          ? effectiveEditYield
+          : (selectedRecipe.yieldQty > 0 ? selectedRecipe.yieldQty : 1);
+        const scaleMult = desiredTotalYield > 0 ? desiredTotalYield / baseYield : 1;
+
         const liveRecipeForCost: Recipe = isEditingRecipeItems
           ? {
               ...selectedRecipe,
               name: editableRecipeMeta.name.trim() || 'Новое блюдо',
               category: editableRecipeMeta.category,
+              yieldQty: effectiveEditYield,
               sellingPrice: parseFloat(editableRecipeMeta.sellingPrice.replace(',', '.')) || 0,
               items: cleanDraftItems,
             }
           : selectedRecipe;
 
+        const batchCost = calculateRecipeBatchCost(liveRecipeForCost);
         const costPerKg = calculateRecipeCost(liveRecipeForCost);
         const fc = getRecipeFoodCostPercent(liveRecipeForCost);
-        const scaledCost = costPerKg * scaleMult;
-        const scaledPrice = liveRecipeForCost.sellingPrice * scaleMult;
+        const scaledCost = isEditingRecipeItems ? batchCost : costPerKg * desiredTotalYield;
+        const scaledPrice = isEditingRecipeItems
+          ? liveRecipeForCost.sellingPrice * effectiveEditYield
+          : liveRecipeForCost.sellingPrice * desiredTotalYield;
 
         const handleSaveFullRecipe = () => {
           const finalName = editableRecipeMeta.name.trim();
@@ -3810,7 +3873,7 @@ export default function App() {
             id: isNewRecipeDraft ? `rec-${Date.now()}` : selectedRecipe.id,
             name: finalName,
             category: editableRecipeMeta.category,
-            yieldQty: 1,
+            yieldQty: effectiveEditYield,
             yieldUnit: 'кг',
             prepTimeMin: finalPrep,
             sellingPrice: finalPrice,
@@ -3827,10 +3890,17 @@ export default function App() {
           }
           setExpandedTtkCategories(prev => ({ ...prev, [savedRecipe.category]: true }));
           setSelectedRecipe(savedRecipe);
+          setDesiredTotalYield(savedRecipe.yieldQty);
+          setDraftYieldInput(String(savedRecipe.yieldQty));
           setIsNewRecipeDraft(false);
           setIsEditingRecipeItems(false);
           setIsBulkPasteOpen(false);
-          showNotice('success', isNewRecipeDraft ? `ТТК «${savedRecipe.name}» создана!` : `ТТК «${savedRecipe.name}» сохранена!`);
+          showNotice(
+            'success',
+            isNewRecipeDraft
+              ? `ТТК «${savedRecipe.name}» создана (выход ${formatWeightNumber(savedRecipe.yieldQty)} кг)!`
+              : `ТТК «${savedRecipe.name}» сохранена (выход ${formatWeightNumber(savedRecipe.yieldQty)} кг)!`
+          );
         };
 
         const handleApplyBulkPaste = () => {
@@ -3905,6 +3975,9 @@ export default function App() {
 
             if (mappedRows.length > 0) {
               setEditableRecipeItems(mappedRows);
+              setIsCustomYieldManual(false);
+              const aiSumKg = calculateItemsTotalWeightKg(mappedRows);
+              setDraftYieldInput(String(aiSumKg > 0 ? aiSumKg : 1));
             }
             const suggestedTags = normalizeRecipeTags(s.tags);
             const suggestedSteps = Array.isArray(s.steps)
@@ -3935,7 +4008,9 @@ export default function App() {
                     <span className="text-[11px] px-2.5 py-0.5 bg-amber-500/20 text-amber-400 rounded-md font-semibold">
                       {isEditingRecipeItems ? editableRecipeMeta.category : selectedRecipe.category}
                     </span>
-                    <span className="text-[11px] text-stone-400">База: на 1 кг</span>
+                    <span className="text-[11px] text-stone-400 font-mono">
+                      Выход: {formatWeightNumber(baseYield)} {selectedRecipe.yieldUnit || 'кг'}
+                    </span>
                     {(isEditingRecipeItems ? editableRecipeMeta.tags : normalizeRecipeTags(selectedRecipe.tags)).map(tag => (
                       <span
                         key={tag}
@@ -4149,9 +4224,9 @@ export default function App() {
                     <div>
                       <div className="font-semibold text-white text-xs sm:text-sm flex items-center gap-1.5">
                         <Calculator className="w-4 h-4 text-amber-500" />
-                        <span>Пересчет на партию (база: 1 кг)</span>
+                        <span>Пересчет на партию (выход ТТК: {formatWeightNumber(baseYield)} кг)</span>
                       </div>
-                      <div className="text-stone-400 text-[11px] mt-0.5">Введите нужный вес готовой продукции:</div>
+                      <div className="text-stone-400 text-[11px] mt-0.5">Введите нужный вес готовой продукции для пересчета:</div>
                     </div>
                     <div className="flex items-center gap-2">
                       <input
@@ -4170,12 +4245,22 @@ export default function App() {
                 {/* Financial Summary */}
                 <div className="grid grid-cols-3 gap-2.5">
                   <div className="bg-stone-950 p-2.5 rounded-xl border border-stone-800 text-center">
-                    <div className="text-[10px] text-stone-400 uppercase">Себест. (склад)</div>
+                    <div className="text-[10px] text-stone-400 uppercase">
+                      {isEditingRecipeItems
+                        ? `Себест. (${formatWeightNumber(baseYield)} кг)`
+                        : `Себест. (${formatWeightNumber(desiredTotalYield || 0)} кг)`}
+                    </div>
                     <div className="text-sm sm:text-base font-bold text-stone-100">{Math.round(scaledCost)} ₽</div>
+                    <div className="text-[10px] text-stone-500">{Math.round(costPerKg)} ₽/кг</div>
                   </div>
                   <div className="bg-stone-950 p-2.5 rounded-xl border border-stone-800 text-center">
-                    <div className="text-[10px] text-stone-400 uppercase">Цена продажи</div>
+                    <div className="text-[10px] text-stone-400 uppercase">
+                      {isEditingRecipeItems
+                        ? `Выручка (${formatWeightNumber(baseYield)} кг)`
+                        : `Цена (${formatWeightNumber(desiredTotalYield || 0)} кг)`}
+                    </div>
                     <div className="text-sm sm:text-base font-bold text-amber-400">{Math.round(scaledPrice)} ₽</div>
+                    <div className="text-[10px] text-stone-500">{Math.round(liveRecipeForCost.sellingPrice)} ₽/кг</div>
                   </div>
                   <div className="bg-stone-950 p-2.5 rounded-xl border border-stone-800 text-center">
                     <div className="text-[10px] text-stone-400 uppercase">Фудкост / Маржа</div>
@@ -4192,8 +4277,8 @@ export default function App() {
                   <div className="flex flex-wrap justify-between items-center gap-2 mb-2.5">
                     <h4 className="font-semibold text-white text-xs sm:text-sm">
                       {isEditingRecipeItems
-                        ? 'Продукты на 1 кг готовой продукции:'
-                        : `Раскладка продуктов (на ${desiredTotalYield} кг):`}
+                        ? `Продукты закладки (выход: ${formatWeightNumber(effectiveEditYield)} кг):`
+                        : `Раскладка продуктов (на ${formatWeightNumber(desiredTotalYield || 0)} кг):`}
                     </h4>
                     <div className="flex items-center gap-2 flex-wrap">
                       {isEditingRecipeItems && (
@@ -4240,6 +4325,57 @@ export default function App() {
 
                   {isEditingRecipeItems ? (
                     <div className="space-y-2.5 bg-stone-950 p-3 rounded-xl border border-stone-800">
+                      {/* Actual Dish Yield Bar (auto-summed from gram weights, with optional manual override) */}
+                      <div className="bg-stone-900/90 border border-stone-800 rounded-xl p-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[11px] font-medium text-stone-300 flex items-center gap-1.5">
+                            <Scale className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Выход готового блюда:</span>
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={
+                                isCustomYieldManual
+                                  ? draftYieldInput
+                                  : (autoSumWeightKg > 0 ? String(autoSumWeightKg) : draftYieldInput)
+                              }
+                              onChange={e => {
+                                setIsCustomYieldManual(true);
+                                setDraftYieldInput(e.target.value);
+                              }}
+                              placeholder="1"
+                              className="w-20 bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2 py-1 text-xs font-bold text-amber-400 text-center outline-none"
+                            />
+                            <span className="text-xs text-stone-300 font-medium">кг</span>
+                          </div>
+                        </div>
+                        {isCustomYieldManual ? (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-[10px] text-stone-400">
+                              Задан вручную (сумма: {formatWeightNumber(autoSumWeightKg)} кг)
+                            </span>
+                            {autoSumWeightKg > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIsCustomYieldManual(false);
+                                  setDraftYieldInput(String(autoSumWeightKg));
+                                }}
+                                className="text-[10px] bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 px-2.5 py-1 rounded-lg font-semibold transition"
+                              >
+                                Из граммовок ({formatWeightNumber(autoSumWeightKg)} кг)
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-lg">
+                            Считается автоматически по сумме граммовок ({formatWeightNumber(effectiveEditYield)} кг)
+                          </span>
+                        )}
+                      </div>
+
                       {/* Optional Bulk Text Paste Helper */}
                       {isBulkPasteOpen && (
                         <div className="bg-stone-900 border border-amber-500/30 rounded-xl p-3 space-y-2">
