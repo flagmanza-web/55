@@ -303,6 +303,87 @@ async function startServer() {
     }
   });
 
+  // Endpoint to suggest a 1 kg TTK composition & steps for a dish name
+  app.post('/api/gemini/suggest-recipe', async (req, res) => {
+    try {
+      const { name, category, sellingPrice, warehouseNames } = req.body;
+      const apiKey = process.env.GEMINI_API_KEY;
+
+      if (!apiKey) {
+        return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
+      }
+      if (!name || !String(name).trim()) {
+        return res.status(400).json({ error: 'Не указано название блюда.' });
+      }
+
+      const ai = createGeminiClient(apiKey);
+      const stockHint =
+        Array.isArray(warehouseNames) && warehouseNames.length > 0
+          ? `Если продукт есть в списке склада, используй точное название со склада: ${warehouseNames.slice(0, 40).join(', ')}.`
+          : '';
+
+      const response = await generateWithRetry(ai, {
+        model: 'gemini-4-hydrogen',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: `Ты — шеф-технолог кулинарного магазина «САЛАТиКо». Составь технологическую карту (ТТК) строго на 1 кг готовой продукции для блюда:
+Название: "${String(name).trim()}"
+Категория: "${String(category || 'Горячие блюда')}"
+${sellingPrice ? `Цена продажи: ${sellingPrice} руб/кг` : ''}
+${stockHint}
+
+Требования:
+- Укажи реальные ингредиенты с граммовками (вес/количество) строго на 1 кг готовой продукции (сумма основного сырья около 1000–1150 гр с учетом термообработки или ровно 1000 гр для салатов).
+- Используй единицы измерения строго из списка: "кг", "гр", "шт", "л", "мл", "банка".
+- Заполни время приготовления (мин), срок годности (часы), подходящие теги из ["постное", "безглютеновое", "сезонное"] (только если реально подходят) и 3–5 чётких шагов технологии приготовления.`,
+              },
+            ],
+          },
+        ],
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              prepTimeMin: { type: Type.NUMBER },
+              shelfLifeHours: { type: Type.NUMBER },
+              tags: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+              items: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING },
+                    quantity: { type: Type.NUMBER },
+                    unit: { type: Type.STRING },
+                  },
+                  required: ['name', 'quantity', 'unit'],
+                },
+              },
+              steps: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+            },
+            required: ['items', 'steps'],
+          },
+        },
+      });
+
+      const suggestion = parseJsonSafely(response.text || '{}', {});
+      res.json({ suggestion });
+    } catch (error: any) {
+      console.error('Gemini Suggest Recipe Error:', error);
+      res.status(500).json({ error: formatGeminiError(error, 'Ошибка подбора состава ТТК через ИИ') });
+    }
+  });
+
   // Endpoint to parse supplier receipt/invoice items from image using Gemini Vision
   app.post('/api/gemini/parse-receipt-items', async (req, res) => {
     try {

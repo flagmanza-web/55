@@ -43,7 +43,8 @@ import {
   X,
   Paperclip,
   Copy,
-  ListPlus
+  ListPlus,
+  Tag
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -113,6 +114,46 @@ const normalizeCategory = (cat: string): RecipeCategory => {
   return 'Горячие блюда';
 };
 
+const RECIPE_TAGS = ['постное', 'безглютеновое', 'сезонное'] as const;
+type RecipeTag = typeof RECIPE_TAGS[number];
+
+const normalizeRecipeTags = (tags: unknown): string[] => {
+  if (!Array.isArray(tags)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of tags) {
+    const clean = String(raw || '').trim().toLowerCase();
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    result.push(clean);
+  }
+  return result;
+};
+
+const getRecipeTagBadgeClass = (tag: string): string => {
+  switch (tag.toLowerCase()) {
+    case 'постное':
+      return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30';
+    case 'безглютеновое':
+      return 'bg-sky-500/15 text-sky-300 border-sky-500/30';
+    case 'сезонное':
+      return 'bg-orange-500/15 text-orange-300 border-orange-500/30';
+    default:
+      return 'bg-stone-800 text-stone-300 border-stone-700';
+  }
+};
+
+interface BulkMenuDraftRow {
+  id: string;
+  selected: boolean;
+  name: string;
+  category: RecipeCategory;
+  sellingPrice: number;
+  tags: string[];
+  matchType: 'new' | 'existing' | 'duplicate_in_list';
+  existingRecipeId?: string;
+}
+
 interface Recipe {
   id: string;
   name: string;
@@ -124,6 +165,7 @@ interface Recipe {
   steps: string[];
   sellingPrice: number; // цена продажи за базовый выход
   shelfLifeHours: number; // срок годности в часах
+  tags?: string[];
   imageUrl?: string;
 }
 
@@ -384,6 +426,8 @@ export default function App() {
   const [selectedDay, setSelectedDay] = useState<string>('Понедельник');
   const [recipeViewMode, setRecipeViewMode] = useState<'sheet' | 'cards'>('sheet');
   const [recipeSearchQuery, setRecipeSearchQuery] = useState<string>('');
+  const [recipeTagFilter, setRecipeTagFilter] = useState<string>('');
+  const [recipeOnlyDraftsFilter, setRecipeOnlyDraftsFilter] = useState<boolean>(false);
   const [expandedTtkCategories, setExpandedTtkCategories] = useState<Record<string, boolean>>({});
   const [weeklyMenuSearchQuery, setWeeklyMenuSearchQuery] = useState<string>('');
 
@@ -427,6 +471,7 @@ export default function App() {
     return parsed.map((r: any) => ({
       ...r,
       category: normalizeCategory(r.category || 'Горячие блюда'),
+      tags: normalizeRecipeTags(r.tags),
       items: Array.isArray(r.items)
         ? r.items.map((rawItem: any): RecipeItem => {
             const matchedIng = rawItem?.ingredientId
@@ -637,6 +682,7 @@ export default function App() {
     sellingPrice: string;
     prepTimeMin: string;
     shelfLifeHours: string;
+    tags: string[];
     stepsText: string;
   }>({
     name: '',
@@ -644,10 +690,17 @@ export default function App() {
     sellingPrice: '600',
     prepTimeMin: '30',
     shelfLifeHours: '48',
+    tags: [],
     stepsText: '',
   });
+  const [customTagInput, setCustomTagInput] = useState('');
   const [isBulkPasteOpen, setIsBulkPasteOpen] = useState(false);
   const [bulkPasteText, setBulkPasteText] = useState('');
+  const [isSuggestingRecipeAi, setIsSuggestingRecipeAi] = useState(false);
+  const [isBulkMenuModalOpen, setIsBulkMenuModalOpen] = useState(false);
+  const [bulkMenuRawText, setBulkMenuRawText] = useState('');
+  const [bulkMenuRows, setBulkMenuRows] = useState<BulkMenuDraftRow[]>([]);
+  const [bulkMenuUpdateExisting, setBulkMenuUpdateExisting] = useState(true);
   const ttkProductInputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const pendingFocusRowRef = useRef<number | null>(null);
   const [isNewIngredientModalOpen, setIsNewIngredientModalOpen] = useState(false);
@@ -669,6 +722,7 @@ export default function App() {
     setIsEditingRecipeItems(startInEdit);
     setIsBulkPasteOpen(false);
     setBulkPasteText('');
+    setCustomTagInput('');
     setEditableRecipeItems(
       recipe.items.length > 0
         ? toEditableItems(recipe.items)
@@ -680,6 +734,7 @@ export default function App() {
       sellingPrice: String(recipe.sellingPrice || 0),
       prepTimeMin: String(recipe.prepTimeMin || 30),
       shelfLifeHours: String(recipe.shelfLifeHours || 48),
+      tags: normalizeRecipeTags(recipe.tags),
       stepsText: (recipe.steps || []).join('\n'),
     });
   };
@@ -694,6 +749,7 @@ export default function App() {
       prepTimeMin: 30,
       sellingPrice: 600,
       shelfLifeHours: 48,
+      tags: [],
       items: [],
       steps: [],
     };
@@ -703,6 +759,7 @@ export default function App() {
     setIsEditingRecipeItems(true);
     setIsBulkPasteOpen(false);
     setBulkPasteText('');
+    setCustomTagInput('');
     setEditableRecipeItems([{ name: '', quantity: 0, quantityInput: '', unit: 'гр' }]);
     setEditableRecipeMeta({
       name: '',
@@ -710,6 +767,7 @@ export default function App() {
       sellingPrice: '600',
       prepTimeMin: '30',
       shelfLifeHours: '48',
+      tags: [],
       stepsText: '',
     });
   };
@@ -719,6 +777,7 @@ export default function App() {
       ...recipe,
       id: `rec-${Date.now()}`,
       name: `${recipe.name} (копия)`,
+      tags: [...normalizeRecipeTags(recipe.tags)],
       items: recipe.items.map(it => ({ ...it })),
       steps: [...(recipe.steps || [])],
     };
@@ -784,6 +843,193 @@ export default function App() {
       });
     }
     return rows;
+  };
+
+  const guessCategoryFromDishName = (rawName: string): RecipeCategory => {
+    const n = rawName.toLowerCase().trim();
+    if (/(чай|квас|морс|компот|сок\b|кофе|какао|лимонад|кисель|узвар|смузи|напиток)/.test(n)) {
+      return 'Напитки';
+    }
+    if (/(борщ|суп\b|окрошк|солянк|рассольник|\bщи\b|\bуха\b|бульон|харчо|том ям|шорпа|лагман|свекольник)/.test(n)) {
+      return 'Супы';
+    }
+    if (/(каша|перловк|\bкутя\b|кутья|овсян|пшен|манная|булгур|^греч[аи]\s*(отвар|молоч)?$)/.test(n)) {
+      return 'Каши';
+    }
+    if (/(киш\b|пирог|хачапури|чебурек|лаваш|\bпита\b|пицц|блин|маффин|бургер|бигмак|корндог|сэндвич|булоч|слойк|пирож|беляш|самса|ватрушк)/.test(n)) {
+      return 'Выпечка';
+    }
+    if (/(торт|наполеон|сырник|творожник|запеканка творож|тирамису|чизкейк|эклер|пирожн|десерт|фруктов|арбуз|медовик|мусс)/.test(n)) {
+      return 'Десерты';
+    }
+    if (
+      /(^салат|оливье|винегрет|винетрет|цезарь|крабов|мимоз|под шубой|греческий|витаминн|по-корейски|огурцы битые|дайкон|гнездо глухар|гранатовый браслет|боул|свежест|свекл|столичн|обжорк|подсолнух|грибная полянк|малахитов|рыжик|шпротк|тиффани|черепаш|капитан|адмирал|конференц|панночк|марио|мелодия|сказк|трио|тунец|нежност|весна|летний|южный|ялта|дачный|русский|пользу|холостяк|красное и белое|кремлевск|ореховый принц|новый краб|салатико|сахолин|сахалин|азия с|юдзу|финесс|мясной богатырь|ленивый ролл)/.test(
+        n
+      )
+    ) {
+      return 'Салаты';
+    }
+    return 'Горячие блюда';
+  };
+
+  const guessTagsFromDishName = (rawName: string): string[] => {
+    const tags: string[] = [];
+    if (/постн/i.test(rawName)) tags.push('постное');
+    if (/без\s*глютен|безглютен|\bб\/г\b/i.test(rawName)) tags.push('безглютеновое');
+    if (/сезон|весна|летний/i.test(rawName)) tags.push('сезонное');
+    return tags;
+  };
+
+  const parseBulkMenuLines = (rawText: string): BulkMenuDraftRow[] => {
+    const existingByName = new Map<string, Recipe>();
+    recipes.forEach(r => existingByName.set(r.name.trim().toLowerCase(), r));
+
+    const seenInBatch = new Set<string>();
+    const rows: BulkMenuDraftRow[] = [];
+
+    const lines = rawText
+      .split(/\r?\n/)
+      .map(l => l.replace(/\u00A0/g, ' ').trim())
+      .filter(Boolean);
+
+    lines.forEach((rawLine, idx) => {
+      // Skip header lines like "Наименование Цена, руб."
+      if (
+        /^(наименование|название|блюдо|позиция|товар)\b/i.test(rawLine) &&
+        /(цена|руб|стоимость)/i.test(rawLine)
+      ) {
+        return;
+      }
+
+      let name = rawLine;
+      let price = 0;
+
+      // 1) Tab or semicolon delimited (Excel / CSV paste)
+      const sepMatch = rawLine.match(/^(.+?)[\t;]+([\d\s.,]+)\s*(?:₽|руб\.?|р\.?)?$/i);
+      if (sepMatch && sepMatch[1].trim()) {
+        name = sepMatch[1].trim();
+        const normalizedNum = sepMatch[2].replace(/\s+/g, '').replace(',', '.');
+        price = Math.max(0, Math.round((parseFloat(normalizedNum) || 0) * 100) / 100);
+      } else {
+        // 2) Trailing price separated by space / dash (handles "1 400,00" thousands separator)
+        const trailingMatch = rawLine.match(
+          /^(.+?)(?:[\s\-—:]+)((?:\d{1,3}(?:\s\d{3})+|\d+)(?:[.,]\d{1,2})?)\s*(?:₽|руб\.?|р\.?)?$/i
+        );
+        if (trailingMatch && trailingMatch[1].trim()) {
+          name = trailingMatch[1].replace(/[\s\-—:]+$/, '').trim();
+          const normalizedNum = trailingMatch[2].replace(/\s+/g, '').replace(',', '.');
+          price = Math.max(0, Math.round((parseFloat(normalizedNum) || 0) * 100) / 100);
+        }
+      }
+
+      name = name.replace(/^(\d+[.)]\s*|[•*—–-]\s*)/, '').trim();
+      if (!name) return;
+
+      const key = name.toLowerCase();
+      const existingMatch = existingByName.get(key);
+      const isDuplicateInList = seenInBatch.has(key);
+      seenInBatch.add(key);
+
+      const isJunkOrZero = price <= 0 || /^(тест|пакет)$/i.test(key);
+      const matchType: BulkMenuDraftRow['matchType'] = isDuplicateInList
+        ? 'duplicate_in_list'
+        : existingMatch
+          ? 'existing'
+          : 'new';
+
+      rows.push({
+        id: `bulk-${idx}-${key.slice(0, 12)}`,
+        selected: !isDuplicateInList && !isJunkOrZero,
+        name,
+        category: existingMatch ? existingMatch.category : guessCategoryFromDishName(name),
+        sellingPrice: price,
+        tags: guessTagsFromDishName(name),
+        matchType,
+        existingRecipeId: existingMatch?.id,
+      });
+    });
+
+    return rows;
+  };
+
+  const handleBulkMenuTextChange = (text: string) => {
+    setBulkMenuRawText(text);
+    setBulkMenuRows(parseBulkMenuLines(text));
+  };
+
+  const handleImportBulkMenu = () => {
+    const selectedRows = bulkMenuRows.filter(r => r.selected && r.name.trim());
+    if (selectedRows.length === 0) {
+      showNotice('error', 'Отметьте хотя бы одно блюдо для импорта.');
+      return;
+    }
+
+    let addedCount = 0;
+    let updatedCount = 0;
+    const touchedCategories: Record<string, boolean> = {};
+    const updatesById = new Map<string, BulkMenuDraftRow>();
+    const newRecipesToAdd: Recipe[] = [];
+    const baseTs = Date.now();
+
+    selectedRows.forEach((row, idx) => {
+      const cleanName = row.name.trim();
+      if (row.matchType === 'existing' && row.existingRecipeId) {
+        if (bulkMenuUpdateExisting) {
+          updatesById.set(row.existingRecipeId, row);
+          touchedCategories[row.category] = true;
+          updatedCount++;
+        }
+        return;
+      }
+
+      const newRec: Recipe = {
+        id: `rec-${baseTs}-${idx}`,
+        name: cleanName,
+        category: row.category,
+        yieldQty: 1,
+        yieldUnit: 'кг',
+        prepTimeMin: 30,
+        sellingPrice: Math.max(0, row.sellingPrice),
+        shelfLifeHours: 48,
+        tags: normalizeRecipeTags(row.tags),
+        items: [],
+        steps: [],
+      };
+      newRecipesToAdd.push(newRec);
+      touchedCategories[row.category] = true;
+      addedCount++;
+    });
+
+    if (addedCount === 0 && updatedCount === 0) {
+      showNotice('error', 'Нет новых позиций для добавления (все выбранные уже есть в ТТК).');
+      return;
+    }
+
+    setRecipes(prev => {
+      const updatedExisting = prev.map(r => {
+        const upd = updatesById.get(r.id);
+        if (!upd) return r;
+        const mergedTags = normalizeRecipeTags([...(r.tags || []), ...(upd.tags || [])]);
+        return {
+          ...r,
+          sellingPrice: Math.max(0, upd.sellingPrice),
+          tags: mergedTags,
+        };
+      });
+      return [...newRecipesToAdd, ...updatedExisting];
+    });
+
+    setExpandedTtkCategories(prev => ({ ...prev, ...touchedCategories }));
+    if (addedCount > 0) {
+      setRecipeOnlyDraftsFilter(true);
+    }
+    setIsBulkMenuModalOpen(false);
+    setBulkMenuRawText('');
+    setBulkMenuRows([]);
+    showNotice(
+      'success',
+      `Импортировано ТТК: +${addedCount} новых${updatedCount > 0 ? `, обновлено цен: ${updatedCount}` : ''}. Включён фильтр «Без состава» для заполнения ингредиентов.`
+    );
   };
 
   const handleDeleteRecipe = (recipe: Recipe) => {
@@ -1851,6 +2097,15 @@ export default function App() {
                   </button>
                 </div>
                 <button 
+                  onClick={() => {
+                    setIsBulkMenuModalOpen(true);
+                  }}
+                  className="bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 px-3.5 py-2 rounded-xl font-semibold text-xs transition flex items-center gap-2"
+                >
+                  <ListPlus className="w-4 h-4" />
+                  <span>Импорт списка меню</span>
+                </button>
+                <button 
                   onClick={() => setIsPhotoModalOpen(true)}
                   className="bg-stone-800 hover:bg-stone-700 text-amber-400 border border-amber-500/30 px-3.5 py-2 rounded-xl font-semibold text-xs transition flex items-center gap-2"
                 >
@@ -1867,66 +2122,138 @@ export default function App() {
               </div>
             </div>
 
-            {/* Search bar & Expand/Collapse controls for TTK */}
-            <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center">
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={recipeSearchQuery}
-                  onChange={e => setRecipeSearchQuery(e.target.value)}
-                  placeholder="Поиск блюда в ТТК по названию..."
-                  className="w-full bg-stone-900 border border-stone-800 rounded-xl pl-10 pr-9 py-2.5 text-xs text-stone-100 outline-none focus:border-amber-500 transition"
-                />
-                {recipeSearchQuery && (
-                  <button
-                    onClick={() => setRecipeSearchQuery('')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-white"
-                    title="Очистить поиск"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+            {/* Search bar, Tag filter & Expand/Collapse controls for TTK */}
+            <div className="space-y-2.5">
+              <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={recipeSearchQuery}
+                    onChange={e => setRecipeSearchQuery(e.target.value)}
+                    placeholder="Поиск блюда в ТТК по названию или тегу..."
+                    className="w-full bg-stone-900 border border-stone-800 rounded-xl pl-10 pr-9 py-2.5 text-xs text-stone-100 outline-none focus:border-amber-500 transition"
+                  />
+                  {recipeSearchQuery && (
+                    <button
+                      onClick={() => setRecipeSearchQuery('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-white"
+                      title="Очистить поиск"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+
+                {!recipeSearchQuery.trim() && !recipeTagFilter && !recipeOnlyDraftsFilter && (
+                  <div className="flex gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const allOpen: Record<string, boolean> = {};
+                        RECIPE_CATEGORIES.forEach(c => {
+                          allOpen[c] = true;
+                        });
+                        setExpandedTtkCategories(allOpen);
+                      }}
+                      className="flex-1 sm:flex-initial bg-stone-900 hover:bg-stone-800 text-stone-300 border border-stone-800 px-3 py-2 rounded-xl text-xs font-medium transition"
+                    >
+                      Развернуть все
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedTtkCategories({})}
+                      className="flex-1 sm:flex-initial bg-stone-900 hover:bg-stone-800 text-stone-400 hover:text-stone-200 border border-stone-800 px-3 py-2 rounded-xl text-xs font-medium transition"
+                    >
+                      Свернуть все
+                    </button>
+                  </div>
                 )}
               </div>
 
-              {!recipeSearchQuery.trim() && (
-                <div className="flex gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const allOpen: Record<string, boolean> = {};
-                      RECIPE_CATEGORIES.forEach(c => {
-                        allOpen[c] = true;
-                      });
-                      setExpandedTtkCategories(allOpen);
-                    }}
-                    className="flex-1 sm:flex-initial bg-stone-900 hover:bg-stone-800 text-stone-300 border border-stone-800 px-3 py-2 rounded-xl text-xs font-medium transition"
-                  >
-                    Развернуть все
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setExpandedTtkCategories({})}
-                    className="flex-1 sm:flex-initial bg-stone-900 hover:bg-stone-800 text-stone-400 hover:text-stone-200 border border-stone-800 px-3 py-2 rounded-xl text-xs font-medium transition"
-                  >
-                    Свернуть все
-                  </button>
-                </div>
-              )}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-stone-400 flex items-center gap-1 mr-1">
+                  <Tag className="w-3.5 h-3.5 text-amber-500" />
+                  Теги:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRecipeTagFilter('');
+                    setRecipeOnlyDraftsFilter(false);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition ${
+                    recipeTagFilter === '' && !recipeOnlyDraftsFilter
+                      ? 'bg-amber-500 text-stone-950 border-amber-400 font-semibold'
+                      : 'bg-stone-900 text-stone-300 border-stone-800 hover:border-stone-700'
+                  }`}
+                >
+                  Все ({recipes.length})
+                </button>
+                {RECIPE_TAGS.map(tag => {
+                  const isActive = recipeTagFilter === tag;
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => setRecipeTagFilter(isActive ? '' : tag)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition ${
+                        isActive
+                          ? getRecipeTagBadgeClass(tag) + ' ring-1 ring-white/20 font-semibold'
+                          : 'bg-stone-900 text-stone-300 border-stone-800 hover:border-stone-700'
+                      }`}
+                    >
+                      {tag}
+                    </button>
+                  );
+                })}
+                {(() => {
+                  const draftsCount = recipes.filter(r => r.items.length === 0).length;
+                  if (draftsCount === 0 && !recipeOnlyDraftsFilter) return null;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => setRecipeOnlyDraftsFilter(prev => !prev)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition ml-auto ${
+                        recipeOnlyDraftsFilter
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-semibold'
+                          : 'bg-stone-900 text-amber-400/90 border-stone-800 hover:border-amber-500/30'
+                      }`}
+                    >
+                      Без состава ({draftsCount})
+                    </button>
+                  );
+                })()}
+              </div>
             </div>
 
             {/* COLLAPSIBLE CATEGORY SECTIONS (GROUPS) */}
             {(() => {
               const query = recipeSearchQuery.trim().toLowerCase();
+              const matchesFilters = (r: Recipe) => {
+                const tags = normalizeRecipeTags(r.tags);
+                const matchesTag = !recipeTagFilter || tags.includes(recipeTagFilter);
+                const matchesDrafts = !recipeOnlyDraftsFilter || r.items.length === 0;
+                const matchesQuery =
+                  !query ||
+                  r.name.toLowerCase().includes(query) ||
+                  tags.some(t => t.includes(query));
+                return matchesTag && matchesDrafts && matchesQuery;
+              };
+              const isFiltering = Boolean(query || recipeTagFilter || recipeOnlyDraftsFilter);
               const categoriesToRender = RECIPE_CATEGORIES.filter(cat => {
-                if (!query) return true;
-                return recipes.some(r => r.category === cat && r.name.toLowerCase().includes(query));
+                if (!isFiltering) return true;
+                return recipes.some(r => r.category === cat && matchesFilters(r));
               });
 
               if (categoriesToRender.length === 0) {
                 return (
                   <div className="bg-stone-900 border border-stone-800 rounded-2xl p-8 text-center text-xs text-stone-400">
-                    По запросу «{recipeSearchQuery}» в базе ТТК ничего не найдено.
+                    {recipeOnlyDraftsFilter
+                      ? 'Все блюда уже имеют заполненный состав продуктов.'
+                      : recipeTagFilter
+                        ? `Блюда с тегом «${recipeTagFilter}»${query ? ` по запросу «${recipeSearchQuery}»` : ''} не найдены.`
+                        : `По запросу «${recipeSearchQuery}» в базе ТТК ничего не найдено.`}
                   </div>
                 );
               }
@@ -1935,9 +2262,9 @@ export default function App() {
                 <div className="space-y-3">
                   {categoriesToRender.map(cat => {
                     const catRecipes = recipes.filter(
-                      r => r.category === cat && (!query || r.name.toLowerCase().includes(query))
+                      r => r.category === cat && matchesFilters(r)
                     );
-                    const isExpanded = query ? true : Boolean(expandedTtkCategories[cat]);
+                    const isExpanded = isFiltering ? true : Boolean(expandedTtkCategories[cat]);
 
                     return (
                       <div key={cat} className="bg-stone-900/60 border border-stone-800 rounded-2xl overflow-hidden shadow-sm">
@@ -2013,10 +2340,18 @@ export default function App() {
                                             <tr className="align-top">
                                               <td className="p-4 border-r border-stone-800 bg-stone-950/40">
                                                 <div className="font-bold text-white text-base mb-1.5">{recipe.name}</div>
-                                                <div className="mb-3">
-                                                  <span className="text-[11px] px-2.5 py-1 bg-amber-500/10 text-amber-400 rounded-full border border-amber-500/20 font-semibold inline-block">
+                                                <div className="mb-2.5 flex flex-wrap gap-1.5">
+                                                  <span className="text-[11px] px-2.5 py-0.5 bg-amber-500/10 text-amber-400 rounded-md border border-amber-500/20 font-semibold inline-block">
                                                     {recipe.category}
                                                   </span>
+                                                  {normalizeRecipeTags(recipe.tags).map(tag => (
+                                                    <span
+                                                      key={tag}
+                                                      className={`text-[10px] px-2 py-0.5 rounded-md border font-medium inline-block ${getRecipeTagBadgeClass(tag)}`}
+                                                    >
+                                                      #{tag}
+                                                    </span>
+                                                  ))}
                                                 </div>
                                                 <div className="text-[11px] text-stone-400 space-y-1 bg-stone-900 p-2.5 rounded-xl border border-stone-800 mb-2">
                                                   <div>Себест/кг: <strong className="text-stone-200">{Math.round(cost)} ₽</strong></div>
@@ -2028,24 +2363,38 @@ export default function App() {
                                               <td className="p-0 border-r border-stone-800">
                                                 <table className="w-full text-xs">
                                                   <tbody className="divide-y divide-stone-800/60">
-                                                    {recipe.items.map((it, idx) => (
-                                                      <tr key={idx} className="hover:bg-stone-800/20">
-                                                        <td className="p-3.5 text-stone-200 font-medium">{getRecipeItemName(it)}</td>
+                                                    {recipe.items.length === 0 ? (
+                                                      <tr>
+                                                        <td className="p-3.5 text-amber-400/90 italic">
+                                                          Состав ещё не заполнен — нажмите «Заполнить / Изменить»
+                                                        </td>
                                                       </tr>
-                                                    ))}
+                                                    ) : (
+                                                      recipe.items.map((it, idx) => (
+                                                        <tr key={idx} className="hover:bg-stone-800/20">
+                                                          <td className="p-3.5 text-stone-200 font-medium">{getRecipeItemName(it)}</td>
+                                                        </tr>
+                                                      ))
+                                                    )}
                                                   </tbody>
                                                 </table>
                                               </td>
                                               <td className="p-0 border-r border-stone-800">
                                                 <table className="w-full text-xs">
                                                   <tbody className="divide-y divide-stone-800/60">
-                                                    {recipe.items.map((it, idx) => (
-                                                      <tr key={idx} className="hover:bg-stone-800/20">
-                                                        <td className="p-3.5 text-stone-300 font-mono">
-                                                          <span className="text-amber-400 font-semibold">{formatWeightNumber(getRecipeItemQty(it))}</span> {getRecipeItemUnit(it)}
-                                                        </td>
+                                                    {recipe.items.length === 0 ? (
+                                                      <tr>
+                                                        <td className="p-3.5 text-stone-500 font-mono">—</td>
                                                       </tr>
-                                                    ))}
+                                                    ) : (
+                                                      recipe.items.map((it, idx) => (
+                                                        <tr key={idx} className="hover:bg-stone-800/20">
+                                                          <td className="p-3.5 text-stone-300 font-mono">
+                                                            <span className="text-amber-400 font-semibold">{formatWeightNumber(getRecipeItemQty(it))}</span> {getRecipeItemUnit(it)}
+                                                          </td>
+                                                        </tr>
+                                                      ))
+                                                    )}
                                                   </tbody>
                                                 </table>
                                               </td>
@@ -2107,16 +2456,28 @@ export default function App() {
                                   return (
                                     <div key={recipe.id} className="bg-stone-900 border border-stone-800 hover:border-stone-700 rounded-2xl overflow-hidden flex flex-col justify-between transition shadow-sm">
                                       <div className="p-5 pb-0 flex items-center justify-between gap-2">
-                                        <span className="text-[11px] font-semibold px-2.5 py-1 bg-amber-500/10 text-amber-400 rounded-full border border-amber-500/20">
+                                        <span className="text-[11px] font-semibold px-2.5 py-0.5 bg-amber-500/10 text-amber-400 rounded-md border border-amber-500/20">
                                           {recipe.category}
                                         </span>
-                                        <span className="text-[11px] text-stone-400 font-mono">
-                                          {recipe.items.length} прод.
+                                        <span className={`text-[11px] font-mono ${recipe.items.length === 0 ? 'text-amber-400' : 'text-stone-400'}`}>
+                                          {recipe.items.length === 0 ? 'Без состава' : `${recipe.items.length} прод.`}
                                         </span>
                                       </div>
 
                                       <div className="p-5">
                                         <h3 className="font-bold text-white text-base mb-2">{recipe.name}</h3>
+                                        {normalizeRecipeTags(recipe.tags).length > 0 && (
+                                          <div className="flex flex-wrap gap-1.5 mb-2.5">
+                                            {normalizeRecipeTags(recipe.tags).map(tag => (
+                                              <span
+                                                key={tag}
+                                                className={`text-[10px] px-2 py-0.5 rounded-md border font-medium ${getRecipeTagBadgeClass(tag)}`}
+                                              >
+                                                #{tag}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )}
                                         <div className="text-xs text-stone-400 space-y-1 mb-4">
                                           <div>База ТТК: <strong className="text-amber-400">на 1 кг готовой продукции</strong></div>
                                           <div>Время приготовления: <strong>{recipe.prepTimeMin} мин</strong></div>
@@ -3007,6 +3368,262 @@ export default function App() {
         })}
       </nav>
 
+      {/* BULK MENU IMPORT MODAL */}
+      {isBulkMenuModalOpen && (
+        <div className="fixed inset-0 bg-stone-950/85 backdrop-blur-sm z-50 flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-stone-900 border border-stone-800 rounded-2xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="px-4 py-3.5 sm:px-5 sm:py-4 bg-stone-950 border-b border-stone-800 flex justify-between items-center gap-3">
+              <div>
+                <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
+                  <ListPlus className="w-5 h-5 text-emerald-400" />
+                  <span>Массовый импорт меню в ТТК</span>
+                </h3>
+                <p className="text-[11px] text-stone-400 mt-0.5">
+                  Вставьте список из Excel, 1С, кассы или заметок (формат: «Название Цена»). Категория и теги определятся автоматически.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBulkMenuModalOpen(false)}
+                className="text-stone-400 hover:text-white p-1.5 rounded-lg bg-stone-800"
+                aria-label="Закрыть"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1 text-xs">
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="font-semibold text-stone-200">
+                    1. Вставьте список блюд и цен:
+                  </label>
+                  {bulkMenuRawText && (
+                    <button
+                      type="button"
+                      onClick={() => handleBulkMenuTextChange('')}
+                      className="text-[11px] text-stone-400 hover:text-white"
+                    >
+                      Очистить текст
+                    </button>
+                  )}
+                </div>
+                <textarea
+                  rows={6}
+                  value={bulkMenuRawText}
+                  onChange={e => handleBulkMenuTextChange(e.target.value)}
+                  placeholder={`Наименование Цена, руб.\nАдмирал 1 400,00\nАзия с говядиной 870,00\nБорщ 170,00\nЗапеканка постная картофельно-овощная 790,00\nМорс брусничный 99,00`}
+                  className="w-full bg-stone-950 border border-stone-700 focus:border-emerald-500 rounded-xl p-3 text-stone-100 text-xs font-mono outline-none resize-y"
+                />
+              </div>
+
+              {bulkMenuRows.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 bg-stone-950 p-3 rounded-xl border border-stone-800">
+                    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                      <span className="px-2 py-1 rounded-md bg-stone-900 border border-stone-700 text-stone-200">
+                        Распознано: <strong>{bulkMenuRows.length}</strong>
+                      </span>
+                      <span className="px-2 py-1 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
+                        К импорту: <strong>{bulkMenuRows.filter(r => r.selected).length}</strong>
+                      </span>
+                      <span className="px-2 py-1 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300">
+                        Новых: <strong>{bulkMenuRows.filter(r => r.selected && r.matchType === 'new').length}</strong>
+                      </span>
+                      {bulkMenuRows.some(r => r.matchType === 'existing') && (
+                        <span className="px-2 py-1 rounded-md bg-sky-500/15 border border-sky-500/30 text-sky-300">
+                          Совпадений с базой: <strong>{bulkMenuRows.filter(r => r.matchType === 'existing').length}</strong>
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setBulkMenuRows(prev =>
+                            prev.map(r => ({ ...r, selected: r.matchType !== 'duplicate_in_list' }))
+                          )
+                        }
+                        className="px-2.5 py-1 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 text-[11px]"
+                      >
+                        Выбрать все
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setBulkMenuRows(prev => prev.map(r => ({ ...r, selected: false })))
+                        }
+                        className="px-2.5 py-1 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-400 text-[11px]"
+                      >
+                        Снять все
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setBulkMenuRows(prev =>
+                            prev.map(r =>
+                              r.sellingPrice <= 0 || /^(тест|пакет)$/i.test(r.name.trim())
+                                ? { ...r, selected: false }
+                                : r
+                            )
+                          )
+                        }
+                        className="px-2.5 py-1 rounded-lg bg-stone-800 hover:bg-stone-700 text-amber-300 text-[11px]"
+                      >
+                        Убрать 0 ₽ / тест
+                      </button>
+                    </div>
+                  </div>
+
+                  {bulkMenuRows.some(r => r.matchType === 'existing') && (
+                    <label className="flex items-center gap-2 text-xs text-stone-300 bg-stone-950/70 px-3 py-2 rounded-xl border border-stone-800 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={bulkMenuUpdateExisting}
+                        onChange={e => setBulkMenuUpdateExisting(e.target.checked)}
+                        className="accent-amber-500"
+                      />
+                      <span>
+                        Для уже существующих ТТК — обновить цену продажи из прайса (сохраняя текущий состав и шаги)
+                      </span>
+                    </label>
+                  )}
+
+                  <div className="border border-stone-800 rounded-xl overflow-hidden bg-stone-950 max-h-[38vh] overflow-y-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead className="bg-stone-900 text-stone-400 text-[10px] uppercase sticky top-0 z-10 border-b border-stone-800">
+                        <tr>
+                          <th className="p-2.5 w-8 text-center">✓</th>
+                          <th className="p-2.5">Название блюда</th>
+                          <th className="p-2.5 w-36">Категория</th>
+                          <th className="p-2.5 w-24">Цена (₽)</th>
+                          <th className="p-2.5 w-28 text-right">Статус</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-stone-800/70">
+                        {bulkMenuRows.map((row, idx) => (
+                          <tr
+                            key={row.id}
+                            className={row.selected ? 'bg-stone-950 hover:bg-stone-900/60' : 'bg-stone-950/30 opacity-50'}
+                          >
+                            <td className="p-2 text-center">
+                              <input
+                                type="checkbox"
+                                checked={row.selected}
+                                onChange={e =>
+                                  setBulkMenuRows(prev =>
+                                    prev.map((r, i) => (i === idx ? { ...r, selected: e.target.checked } : r))
+                                  )
+                                }
+                                className="accent-emerald-500"
+                              />
+                            </td>
+                            <td className="p-2">
+                              <input
+                                type="text"
+                                value={row.name}
+                                onChange={e =>
+                                  setBulkMenuRows(prev =>
+                                    prev.map((r, i) => (i === idx ? { ...r, name: e.target.value } : r))
+                                  )
+                                }
+                                className="w-full bg-stone-900 border border-stone-800 focus:border-amber-500 rounded-lg px-2 py-1 text-xs text-stone-100 outline-none"
+                              />
+                              {row.tags.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {row.tags.map(t => (
+                                    <span key={t} className={`text-[9px] px-1.5 py-0.5 rounded border ${getRecipeTagBadgeClass(t)}`}>
+                                      #{t}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </td>
+                            <td className="p-2">
+                              <select
+                                value={row.category}
+                                onChange={e =>
+                                  setBulkMenuRows(prev =>
+                                    prev.map((r, i) =>
+                                      i === idx ? { ...r, category: e.target.value as RecipeCategory } : r
+                                    )
+                                  )
+                                }
+                                className="w-full bg-stone-900 border border-stone-800 focus:border-amber-500 rounded-lg px-1.5 py-1 text-[11px] text-stone-200 outline-none"
+                              >
+                                {RECIPE_CATEGORIES.map(cat => (
+                                  <option key={cat} value={cat}>{cat}</option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="p-2">
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={row.sellingPrice}
+                                onChange={e =>
+                                  setBulkMenuRows(prev =>
+                                    prev.map((r, i) =>
+                                      i === idx ? { ...r, sellingPrice: parseFloat(e.target.value) || 0 } : r
+                                    )
+                                  )
+                                }
+                                className="w-full bg-stone-900 border border-stone-800 focus:border-amber-500 rounded-lg px-2 py-1 text-xs text-amber-400 font-semibold text-right outline-none"
+                              />
+                            </td>
+                            <td className="p-2 text-right whitespace-nowrap">
+                              {row.matchType === 'duplicate_in_list' ? (
+                                <span className="text-[10px] px-2 py-0.5 rounded-md bg-stone-800 text-stone-400 border border-stone-700">
+                                  Дубль
+                                </span>
+                              ) : row.matchType === 'existing' ? (
+                                <span className="text-[10px] px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                                  Уже в ТТК
+                                </span>
+                              ) : (
+                                <span className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                  Новое
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="px-4 py-3 sm:px-5 sm:py-3.5 bg-stone-950 border-t border-stone-800 flex flex-wrap justify-between items-center gap-2">
+              <span className="text-[11px] text-stone-400">
+                После импорта состав каждой ТТК можно заполнить вручную, списком или через ИИ.
+              </span>
+              <div className="flex items-center gap-2 ml-auto">
+                <button
+                  type="button"
+                  onClick={() => setIsBulkMenuModalOpen(false)}
+                  className="bg-stone-800 hover:bg-stone-700 text-stone-300 px-4 py-2 rounded-xl text-xs font-semibold transition"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkMenuRows.filter(r => r.selected).length === 0}
+                  onClick={handleImportBulkMenu}
+                  className="bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-stone-950 px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-emerald-500/20"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Импортировать в ТТК ({bulkMenuRows.filter(r => r.selected).length})</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* PHOTO PARSE MODAL */}
       {isPhotoModalOpen && (
         <div className="fixed inset-0 bg-stone-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -3198,6 +3815,7 @@ export default function App() {
             prepTimeMin: finalPrep,
             sellingPrice: finalPrice,
             shelfLifeHours: finalShelf,
+            tags: normalizeRecipeTags(editableRecipeMeta.tags),
             items: cleanDraftItems,
             steps: finalSteps.length > 0 ? finalSteps : ['Подготовить продукты и приготовить согласно техпроцессу.'],
           };
@@ -3232,6 +3850,81 @@ export default function App() {
           showNotice('success', `Добавлено строк: ${parsedRows.length}`);
         };
 
+        const handleSuggestRecipeWithAi = async () => {
+          const dishName = editableRecipeMeta.name.trim();
+          if (!dishName) {
+            showNotice('error', 'Сначала укажите название блюда.');
+            return;
+          }
+          setIsSuggestingRecipeAi(true);
+          try {
+            const data = await fetchApiJson<{ suggestion?: any; error?: string }>('/api/gemini/suggest-recipe', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: dishName,
+                category: editableRecipeMeta.category,
+                sellingPrice: parseFloat(editableRecipeMeta.sellingPrice.replace(',', '.')) || 0,
+                warehouseNames: ingredients.map(i => i.name),
+              }),
+            });
+            if (data.error) {
+              showNotice('error', `Ошибка ИИ: ${data.error}`);
+              return;
+            }
+            const s = data.suggestion;
+            if (!s) {
+              showNotice('error', 'Не удалось получить черновик состава от ИИ.');
+              return;
+            }
+            const rawItems = Array.isArray(s.items) ? s.items : [];
+            const mappedRows: EditableRecipeItem[] = rawItems
+              .map((it: any): EditableRecipeItem | null => {
+                const name = String(it?.name || '').trim();
+                if (!name) return null;
+                const qty = Number(it?.quantity) || 0;
+                const u = String(it?.unit || 'гр').trim().toLowerCase();
+                const unit: RecipeItemUnit =
+                  u === 'г' || u === 'гр'
+                    ? 'гр'
+                    : u.startsWith('бан')
+                      ? 'банка'
+                      : normalizeUnit(u, 'гр');
+                const matched = ingredients.find(
+                  ing => ing.name.trim().toLowerCase() === name.toLowerCase()
+                );
+                return {
+                  ...(matched ? { ingredientId: matched.id } : {}),
+                  name,
+                  quantity: qty,
+                  quantityInput: qty > 0 ? String(qty) : '',
+                  unit,
+                };
+              })
+              .filter((r: EditableRecipeItem | null): r is EditableRecipeItem => r !== null);
+
+            if (mappedRows.length > 0) {
+              setEditableRecipeItems(mappedRows);
+            }
+            const suggestedTags = normalizeRecipeTags(s.tags);
+            const suggestedSteps = Array.isArray(s.steps)
+              ? s.steps.map((st: any) => String(st || '').trim()).filter(Boolean)
+              : [];
+            setEditableRecipeMeta(prev => ({
+              ...prev,
+              prepTimeMin: s.prepTimeMin ? String(Math.round(Number(s.prepTimeMin))) : prev.prepTimeMin,
+              shelfLifeHours: s.shelfLifeHours ? String(Math.round(Number(s.shelfLifeHours))) : prev.shelfLifeHours,
+              tags: normalizeRecipeTags([...prev.tags, ...suggestedTags]),
+              stepsText: suggestedSteps.length > 0 ? suggestedSteps.join('\n') : prev.stepsText,
+            }));
+            showNotice('success', `Шеф-ИИ подобрал состав (${mappedRows.length} поз.) — проверьте граммовки и нажмите «Сохранить ТТК».`);
+          } catch (err: any) {
+            showNotice('error', err?.message || 'Ошибка при подборе состава через ИИ');
+          } finally {
+            setIsSuggestingRecipeAi(false);
+          }
+        };
+
         return (
           <div className="fixed inset-0 bg-stone-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-2 sm:p-4">
             <div className="bg-stone-900 border border-stone-800 rounded-2xl max-w-2xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
@@ -3239,10 +3932,18 @@ export default function App() {
               <div className="px-4 py-3.5 sm:px-5 sm:py-4 bg-stone-950 border-b border-stone-800 flex justify-between items-center gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[11px] px-2.5 py-0.5 bg-amber-500/20 text-amber-400 rounded-full font-semibold">
+                    <span className="text-[11px] px-2.5 py-0.5 bg-amber-500/20 text-amber-400 rounded-md font-semibold">
                       {isEditingRecipeItems ? editableRecipeMeta.category : selectedRecipe.category}
                     </span>
                     <span className="text-[11px] text-stone-400">База: на 1 кг</span>
+                    {(isEditingRecipeItems ? editableRecipeMeta.tags : normalizeRecipeTags(selectedRecipe.tags)).map(tag => (
+                      <span
+                        key={tag}
+                        className={`text-[10px] px-2 py-0.5 rounded-md border font-medium ${getRecipeTagBadgeClass(tag)}`}
+                      >
+                        #{tag}
+                      </span>
+                    ))}
                   </div>
                   <h3 className="text-base sm:text-lg font-bold text-white mt-1 truncate">
                     {isNewRecipeDraft
@@ -3348,6 +4049,97 @@ export default function App() {
                         />
                       </div>
                     </div>
+
+                    {/* Dish Tags Field */}
+                    <div className="pt-1 border-t border-stone-800/80 space-y-2">
+                      <label className="block text-[10px] text-stone-400 flex items-center gap-1">
+                        <Tag className="w-3 h-3 text-amber-400" />
+                        <span>Теги блюда</span>
+                      </label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {RECIPE_TAGS.map(tag => {
+                          const isSelected = editableRecipeMeta.tags.includes(tag);
+                          return (
+                            <button
+                              key={tag}
+                              type="button"
+                              onClick={() =>
+                                setEditableRecipeMeta(prev => ({
+                                  ...prev,
+                                  tags: prev.tags.includes(tag)
+                                    ? prev.tags.filter(t => t !== tag)
+                                    : [...prev.tags, tag],
+                                }))
+                              }
+                              aria-pressed={isSelected}
+                              className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 ${
+                                isSelected
+                                  ? getRecipeTagBadgeClass(tag) + ' ring-1 ring-white/20 font-semibold'
+                                  : 'bg-stone-900 text-stone-400 border-stone-700 hover:text-stone-200 hover:border-stone-600'
+                              }`}
+                            >
+                              {isSelected && <Check className="w-3 h-3" />}
+                              <span>{tag}</span>
+                            </button>
+                          );
+                        })}
+                        {editableRecipeMeta.tags
+                          .filter(t => !(RECIPE_TAGS as readonly string[]).includes(t))
+                          .map(customTag => (
+                            <button
+                              key={customTag}
+                              type="button"
+                              onClick={() =>
+                                setEditableRecipeMeta(prev => ({
+                                  ...prev,
+                                  tags: prev.tags.filter(t => t !== customTag),
+                                }))
+                              }
+                              title="Убрать тег"
+                              className="px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-stone-800 text-stone-200 border-stone-600 hover:border-red-500/50 transition flex items-center gap-1"
+                            >
+                              <span>#{customTag}</span>
+                              <X className="w-3 h-3 text-stone-400" />
+                            </button>
+                          ))}
+                      </div>
+                      <div className="flex gap-1.5">
+                        <input
+                          type="text"
+                          value={customTagInput}
+                          onChange={e => setCustomTagInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              const clean = customTagInput.trim().toLowerCase().replace(/^#/, '');
+                              if (!clean) return;
+                              setEditableRecipeMeta(prev => ({
+                                ...prev,
+                                tags: prev.tags.includes(clean) ? prev.tags : [...prev.tags, clean],
+                              }));
+                              setCustomTagInput('');
+                            }
+                          }}
+                          placeholder="Свой тег (например: халяль, хит)..."
+                          className="flex-1 bg-stone-900 border border-stone-700 focus:border-amber-500 rounded-lg px-2.5 py-1.5 text-stone-200 text-xs outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const clean = customTagInput.trim().toLowerCase().replace(/^#/, '');
+                            if (!clean) return;
+                            setEditableRecipeMeta(prev => ({
+                              ...prev,
+                              tags: prev.tags.includes(clean) ? prev.tags : [...prev.tags, clean],
+                            }));
+                            setCustomTagInput('');
+                          }}
+                          className="bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 px-3 py-1.5 rounded-lg text-xs font-medium transition shrink-0"
+                        >
+                          Добавить
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -3403,20 +4195,35 @@ export default function App() {
                         ? 'Продукты на 1 кг готовой продукции:'
                         : `Раскладка продуктов (на ${desiredTotalYield} кг):`}
                     </h4>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       {isEditingRecipeItems && (
-                        <button
-                          type="button"
-                          onClick={() => setIsBulkPasteOpen(prev => !prev)}
-                          className={`px-2.5 py-1.5 rounded-xl font-semibold text-xs transition flex items-center gap-1.5 border ${
-                            isBulkPasteOpen
-                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                              : 'bg-stone-800 hover:bg-stone-700 text-stone-200 border-stone-700'
-                          }`}
-                        >
-                          <ListPlus className="w-3.5 h-3.5" />
-                          <span>Вставить списком</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            disabled={isSuggestingRecipeAi}
+                            onClick={handleSuggestRecipeWithAi}
+                            className="px-2.5 py-1.5 rounded-xl font-semibold text-xs transition flex items-center gap-1.5 border bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/30 disabled:opacity-50"
+                          >
+                            {isSuggestingRecipeAi ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Sparkles className="w-3.5 h-3.5" />
+                            )}
+                            <span>{isSuggestingRecipeAi ? 'Подбор ИИ...' : 'Подобрать состав (ИИ)'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIsBulkPasteOpen(prev => !prev)}
+                            className={`px-2.5 py-1.5 rounded-xl font-semibold text-xs transition flex items-center gap-1.5 border ${
+                              isBulkPasteOpen
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                : 'bg-stone-800 hover:bg-stone-700 text-stone-200 border-stone-700'
+                            }`}
+                          >
+                            <ListPlus className="w-3.5 h-3.5" />
+                            <span>Вставить списком</span>
+                          </button>
+                        </>
                       )}
                       {!isEditingRecipeItems && (
                         <button
