@@ -48,7 +48,7 @@ jobs:
       - name: Sync Capacitor Android platform
         run: |
           if [ ! -f capacitor.config.json ] && [ ! -f capacitor.config.ts ]; then
-            npx cap init "КулинарПро" "ru.kulinarpro.app" --web-dir dist
+            npx cap init "САЛАТиКо" "ru.kulinarpro.app" --web-dir dist
           fi
           if [ ! -d android ]; then
             npx cap add android
@@ -84,11 +84,18 @@ jobs:
           EOF
           fi
 
+      - name: Verify signing keystore
+        run: |
+          keytool -list -keystore android/app/salatiko-signing.p12 -storetype PKCS12 -storepass android
+
       - name: Build Debug APK
         run: |
+          export ANDROID_VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))
+          export ANDROID_VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}"
+          echo "Building APK versionCode=$ANDROID_VERSION_CODE versionName=$ANDROID_VERSION_NAME"
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug -PandroidVersionCode="$ANDROID_VERSION_CODE" -PandroidVersionName="$ANDROID_VERSION_NAME"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

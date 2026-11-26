@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Store, 
   Package, 
@@ -91,6 +91,12 @@ interface RecipeItem {
 
 interface EditableRecipeItem extends RecipeItem {
   quantityInput: string;
+}
+
+interface SavedTtkProduct {
+  name: string;
+  unit: RecipeItemUnit;
+  lastUsedAt: number;
 }
 
 const RECIPE_CATEGORIES = [
@@ -705,8 +711,155 @@ export default function App() {
   const [bulkMenuUpdateExisting, setBulkMenuUpdateExisting] = useState(true);
   const ttkProductInputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const pendingFocusRowRef = useRef<number | null>(null);
+  const activeProductRowRef = useRef<HTMLDivElement | null>(null);
+  const [activeProductDropdownIdx, setActiveProductDropdownIdx] = useState<number | null>(null);
+  const [recentTtkProducts, setRecentTtkProducts] = useState<SavedTtkProduct[]>(() => {
+    const parsed = safeParseStorage<SavedTtkProduct[] | null>('cp_recent_ttk_products', null);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed
+        .filter(p => p && typeof p.name === 'string' && p.name.trim())
+        .map((p, idx) => ({
+          name: p.name.trim(),
+          unit: normalizeUnit(p.unit, 'гр'),
+          lastUsedAt: typeof p.lastUsedAt === 'number' ? p.lastUsedAt : Date.now() - idx,
+        }));
+    }
+    const seen = new Set<string>();
+    const seeded: SavedTtkProduct[] = [];
+    let ts = Date.now();
+    for (const rec of recipes) {
+      for (const it of rec.items || []) {
+        const cleanName = (it.name || '').trim();
+        const key = cleanName.toLowerCase();
+        if (!cleanName || seen.has(key)) continue;
+        seen.add(key);
+        seeded.push({
+          name: cleanName,
+          unit: normalizeUnit(it.unit, 'гр'),
+          lastUsedAt: ts--,
+        });
+      }
+    }
+    return seeded;
+  });
   const [isNewIngredientModalOpen, setIsNewIngredientModalOpen] = useState(false);
   const [isNewExpenseModalOpen, setIsNewExpenseModalOpen] = useState(false);
+
+  useEffect(() => {
+    safeSaveStorage('cp_recent_ttk_products', JSON.stringify(recentTtkProducts));
+  }, [recentTtkProducts]);
+
+  const recordTtkProducts = (entries: Array<{ name?: string; unit?: RecipeItemUnit }>) => {
+    const valid = entries
+      .map(e => ({
+        name: (e.name || '').trim(),
+        unit: normalizeUnit(e.unit, 'гр'),
+      }))
+      .filter(e => e.name.length >= 2 && e.name.toLowerCase() !== 'продукт');
+    if (valid.length === 0) return;
+
+    setRecentTtkProducts(prev => {
+      const byKey = new Map<string, SavedTtkProduct>();
+      for (const item of prev) {
+        const key = item.name.trim().toLowerCase();
+        if (key && !byKey.has(key)) {
+          byKey.set(key, item);
+        }
+      }
+      const baseTs = Date.now();
+      valid.forEach((entry, i) => {
+        const key = entry.name.toLowerCase();
+        byKey.set(key, {
+          name: entry.name,
+          unit: entry.unit,
+          lastUsedAt: baseTs + i + 1,
+        });
+      });
+      return Array.from(byKey.values())
+        .sort((a, b) => b.lastUsedAt - a.lastUsedAt)
+        .slice(0, 500);
+    });
+  };
+
+  const allTtkProductCatalog = useMemo(() => {
+    const ingByKey = new Map<string, Ingredient>();
+    for (const ing of ingredients) {
+      const k = ing.name.trim().toLowerCase();
+      if (k && !ingByKey.has(k)) ingByKey.set(k, ing);
+    }
+
+    const seen = new Set<string>();
+    const recentList: Array<{
+      name: string;
+      unit: RecipeItemUnit;
+      matchedIngredient?: Ingredient;
+      isRecent: boolean;
+    }> = [];
+    const extraList: Array<{
+      name: string;
+      unit: RecipeItemUnit;
+      matchedIngredient?: Ingredient;
+      isRecent: boolean;
+    }> = [];
+
+    for (const saved of recentTtkProducts) {
+      const key = saved.name.trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      recentList.push({
+        name: saved.name.trim(),
+        unit: saved.unit,
+        matchedIngredient: ingByKey.get(key),
+        isRecent: true,
+      });
+    }
+
+    for (const rec of recipes) {
+      for (const it of rec.items || []) {
+        const cleanName = (it.name || '').trim();
+        const key = cleanName.toLowerCase();
+        if (!cleanName || seen.has(key)) continue;
+        seen.add(key);
+        extraList.push({
+          name: cleanName,
+          unit: normalizeUnit(it.unit, 'гр'),
+          matchedIngredient: ingByKey.get(key),
+          isRecent: false,
+        });
+      }
+    }
+
+    for (const ing of ingredients) {
+      const cleanName = ing.name.trim();
+      const key = cleanName.toLowerCase();
+      if (!cleanName || seen.has(key)) continue;
+      seen.add(key);
+      extraList.push({
+        name: cleanName,
+        unit: normalizeUnit(ing.unit, 'кг'),
+        matchedIngredient: ing,
+        isRecent: false,
+      });
+    }
+
+    extraList.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    return [...recentList, ...extraList];
+  }, [recentTtkProducts, recipes, ingredients]);
+
+  useEffect(() => {
+    if (activeProductDropdownIdx === null) return;
+    const handlePointerDown = (e: PointerEvent) => {
+      if (activeProductRowRef.current && !activeProductRowRef.current.contains(e.target as Node)) {
+        const currentRow = editableRecipeItems[activeProductDropdownIdx];
+        if (currentRow && currentRow.name.trim().length >= 2) {
+          recordTtkProducts([{ name: currentRow.name, unit: currentRow.unit }]);
+        }
+        setActiveProductDropdownIdx(null);
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [activeProductDropdownIdx, editableRecipeItems]);
 
   useEffect(() => {
     if (pendingFocusRowRef.current !== null) {
@@ -726,6 +879,7 @@ export default function App() {
     setDraftYieldInput(String(initialYield));
     setIsCustomYieldManual(autoWeightKg > 0 && Math.abs(initialYield - autoWeightKg) > 0.005);
     setIsEditingRecipeItems(startInEdit);
+    setActiveProductDropdownIdx(null);
     setIsBulkPasteOpen(false);
     setBulkPasteText('');
     setCustomTagInput('');
@@ -765,6 +919,7 @@ export default function App() {
     setDraftYieldInput('1');
     setIsCustomYieldManual(false);
     setIsEditingRecipeItems(true);
+    setActiveProductDropdownIdx(null);
     setIsBulkPasteOpen(false);
     setBulkPasteText('');
     setCustomTagInput('');
@@ -1563,6 +1718,7 @@ export default function App() {
         };
 
         setRecipes(prev => [newRecipe, ...prev]);
+        recordTtkProducts(parsedItems);
         setExpandedTtkCategories(prev => ({ ...prev, [newRecipe.category]: true }));
         setIsPhotoModalOpen(false);
         openRecipeModal(newRecipe, true);
@@ -3888,6 +4044,8 @@ export default function App() {
           } else {
             setRecipes(prev => prev.map(r => (r.id === savedRecipe.id ? savedRecipe : r)));
           }
+          recordTtkProducts(cleanDraftItems);
+          setActiveProductDropdownIdx(null);
           setExpandedTtkCategories(prev => ({ ...prev, [savedRecipe.category]: true }));
           setSelectedRecipe(savedRecipe);
           setDesiredTotalYield(savedRecipe.yieldQty);
@@ -3909,6 +4067,7 @@ export default function App() {
             showNotice('error', 'Вставьте хотя бы одну строку, например: Картофель 300 гр');
             return;
           }
+          recordTtkProducts(parsedRows);
           setEditableRecipeItems(prev => {
             const nonEmptyExisting = prev.filter(
               it => it.name.trim() !== '' || (parseFloat((it.quantityInput || '').replace(',', '.')) || 0) > 0
@@ -4410,12 +4569,6 @@ export default function App() {
                         </div>
                       )}
 
-                      <datalist id="ttk-ingredients-datalist">
-                        {ingredients.map(ing => (
-                          <option key={ing.id} value={ing.name} />
-                        ))}
-                      </datalist>
-
                       {/* Desktop Column Header */}
                       <div className="hidden sm:grid sm:grid-cols-[24px_1fr_92px_92px_32px] gap-2 px-2 text-[10px] text-stone-400 uppercase tracking-wider">
                         <span>#</span>
@@ -4425,109 +4578,272 @@ export default function App() {
                         <span></span>
                       </div>
 
-                      <div className="space-y-1.5">
-                        {editableRecipeItems.map((item, idx) => (
-                          <div
-                            key={idx}
-                            className="bg-stone-900 p-2 rounded-xl border border-stone-800 grid grid-cols-[1fr_auto] sm:grid-cols-[24px_1fr_92px_92px_32px] gap-1.5 sm:gap-2 items-center"
-                          >
-                            <span className="hidden sm:inline text-[11px] font-mono text-stone-500 text-center">
-                              {idx + 1}
-                            </span>
-                            <input
-                              ref={el => {
-                                ttkProductInputRefs.current[idx] = el;
-                              }}
-                              type="text"
-                              list="ttk-ingredients-datalist"
-                              value={item.name}
-                              placeholder={`Продукт ${idx + 1} (напр. Горошек)`}
-                              onChange={e => {
-                                const val = e.target.value;
-                                const matched = ingredients.find(
-                                  ing => ing.name.trim().toLowerCase() === val.trim().toLowerCase()
-                                );
-                                setEditableRecipeItems(prev =>
-                                  prev.map((it, i) =>
-                                    i === idx
-                                      ? {
-                                          ...it,
-                                          name: val,
-                                          ingredientId: matched?.id,
-                                          ...(matched && !it.name.trim() ? { unit: matched.unit } : {}),
-                                        }
-                                      : it
-                                  )
-                                );
-                              }}
-                              className="col-span-2 sm:col-span-1 w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2.5 py-1.5 text-stone-100 text-xs outline-none"
-                            />
-                            <div className="flex items-center gap-1.5 sm:contents">
-                              <input
-                                type="text"
-                                inputMode="decimal"
-                                placeholder="Вес"
-                                value={item.quantityInput}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter') {
-                                    e.preventDefault();
-                                    const nextIdx = editableRecipeItems.length;
-                                    pendingFocusRowRef.current = nextIdx;
-                                    setEditableRecipeItems(prev => [
-                                      ...prev,
-                                      { name: '', quantity: 0, quantityInput: '', unit: item.unit || 'гр' },
-                                    ]);
+                      <div className={`space-y-1.5 ${activeProductDropdownIdx !== null ? 'pb-40' : ''}`}>
+                        {editableRecipeItems.map((item, idx) => {
+                          const isDropdownOpen = activeProductDropdownIdx === idx;
+                          const queryLower = item.name.trim().toLowerCase();
+                          const recentTop3 = !queryLower ? allTtkProductCatalog.slice(0, 3) : [];
+                          const restCatalog = !queryLower
+                            ? allTtkProductCatalog.slice(3)
+                            : allTtkProductCatalog.filter(opt =>
+                                opt.name.toLowerCase().includes(queryLower)
+                              );
+
+                          const handlePickTtkProduct = (opt: (typeof allTtkProductCatalog)[number]) => {
+                            setEditableRecipeItems(prev =>
+                              prev.map((it, i) =>
+                                i === idx
+                                  ? {
+                                      ...it,
+                                      name: opt.name,
+                                      ingredientId: opt.matchedIngredient?.id,
+                                      ...(!it.quantityInput.trim() && it.quantity === 0
+                                        ? { unit: opt.unit }
+                                        : {}),
+                                    }
+                                  : it
+                              )
+                            );
+                            recordTtkProducts([{ name: opt.name, unit: opt.unit }]);
+                            setActiveProductDropdownIdx(null);
+                          };
+
+                          return (
+                            <div
+                              key={idx}
+                              className="bg-stone-900 p-2 rounded-xl border border-stone-800 grid grid-cols-[1fr_auto] sm:grid-cols-[24px_1fr_92px_92px_32px] gap-1.5 sm:gap-2 items-center"
+                            >
+                              <span className="hidden sm:inline text-[11px] font-mono text-stone-500 text-center">
+                                {idx + 1}
+                              </span>
+                              <div
+                                ref={el => {
+                                  if (isDropdownOpen) {
+                                    activeProductRowRef.current = el;
                                   }
                                 }}
-                                onChange={e => {
-                                  const raw = e.target.value;
-                                  const parsed = parseFloat(raw.replace(',', '.')) || 0;
-                                  setEditableRecipeItems(prev =>
-                                    prev.map((it, i) =>
-                                      i === idx ? { ...it, quantityInput: raw, quantity: parsed } : it
-                                    )
-                                  );
-                                }}
-                                className="flex-1 sm:flex-initial w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2 py-1.5 text-xs text-stone-100 text-center outline-none"
-                              />
-                              <select
-                                value={item.unit}
-                                onChange={e => {
-                                  const unit = e.target.value as RecipeItemUnit;
-                                  setEditableRecipeItems(prev =>
-                                    prev.map((it, i) => (i === idx ? { ...it, unit } : it))
-                                  );
-                                }}
-                                className="w-24 sm:w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2 py-1.5 text-xs text-stone-100 outline-none"
+                                className="relative col-span-2 sm:col-span-1"
                               >
-                                {RECIPE_ITEM_UNITS.map(u => (
-                                  <option key={u} value={u}>{u}</option>
-                                ))}
-                              </select>
+                                <input
+                                  ref={el => {
+                                    ttkProductInputRefs.current[idx] = el;
+                                  }}
+                                  type="text"
+                                  autoComplete="off"
+                                  value={item.name}
+                                  placeholder={`Продукт ${idx + 1} (напр. Горошек)`}
+                                  onFocus={() => setActiveProductDropdownIdx(idx)}
+                                  onClick={() => setActiveProductDropdownIdx(idx)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Escape') {
+                                      setActiveProductDropdownIdx(null);
+                                    }
+                                  }}
+                                  onChange={e => {
+                                    const val = e.target.value;
+                                    const matched = ingredients.find(
+                                      ing => ing.name.trim().toLowerCase() === val.trim().toLowerCase()
+                                    );
+                                    setEditableRecipeItems(prev =>
+                                      prev.map((it, i) =>
+                                        i === idx
+                                          ? {
+                                              ...it,
+                                              name: val,
+                                              ingredientId: matched?.id,
+                                              ...(matched && !it.name.trim() ? { unit: matched.unit } : {}),
+                                            }
+                                          : it
+                                      )
+                                    );
+                                    if (activeProductDropdownIdx !== idx) {
+                                      setActiveProductDropdownIdx(idx);
+                                    }
+                                  }}
+                                  className="w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg pl-2.5 pr-7 py-1.5 text-stone-100 text-xs outline-none"
+                                />
+                                <button
+                                  type="button"
+                                  tabIndex={-1}
+                                  onClick={() =>
+                                    setActiveProductDropdownIdx(prev => (prev === idx ? null : idx))
+                                  }
+                                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-amber-400 p-0.5 transition"
+                                  aria-label="Список продуктов"
+                                >
+                                  <ChevronDown
+                                    className={`w-3.5 h-3.5 transition-transform ${
+                                      isDropdownOpen ? 'rotate-180 text-amber-400' : ''
+                                    }`}
+                                  />
+                                </button>
+
+                                {isDropdownOpen && (
+                                  <div className="absolute left-0 right-0 top-full mt-1 z-40 bg-stone-900 border border-amber-500/40 rounded-xl shadow-2xl overflow-hidden">
+                                    <div className="max-h-[156px] overflow-y-auto overscroll-contain divide-y divide-stone-800/70">
+                                      {!queryLower ? (
+                                        <>
+                                          {recentTop3.length > 0 && (
+                                            <div>
+                                              <div className="sticky top-0 bg-stone-950/95 backdrop-blur-sm px-2.5 py-1 text-[10px] font-semibold text-amber-400 uppercase tracking-wider flex items-center gap-1 border-b border-stone-800">
+                                                <Clock className="w-3 h-3" />
+                                                <span>Последние 3 продукта</span>
+                                              </div>
+                                              {recentTop3.map(opt => (
+                                                <button
+                                                  key={`recent-${opt.name.toLowerCase()}`}
+                                                  type="button"
+                                                  onClick={() => handlePickTtkProduct(opt)}
+                                                  className="w-full text-left px-2.5 py-2 hover:bg-stone-800 active:bg-stone-700 transition flex items-center justify-between gap-2 text-xs"
+                                                >
+                                                  <span className="font-medium text-stone-100 truncate">
+                                                    {opt.name}
+                                                  </span>
+                                                  <span className="text-[10px] text-amber-300 shrink-0 font-mono">
+                                                    {opt.matchedIngredient
+                                                      ? `${opt.matchedIngredient.costPerUnit} ₽/${opt.matchedIngredient.unit}`
+                                                      : opt.unit}
+                                                  </span>
+                                                </button>
+                                              ))}
+                                            </div>
+                                          )}
+
+                                          {restCatalog.length > 0 && (
+                                            <div>
+                                              <div className="sticky top-0 bg-stone-950/95 backdrop-blur-sm px-2.5 py-1 text-[10px] font-semibold text-stone-400 uppercase tracking-wider border-b border-stone-800">
+                                                Все продукты (листайте ниже)
+                                              </div>
+                                              {restCatalog.map(opt => (
+                                                <button
+                                                  key={`all-${opt.name.toLowerCase()}`}
+                                                  type="button"
+                                                  onClick={() => handlePickTtkProduct(opt)}
+                                                  className="w-full text-left px-2.5 py-2 hover:bg-stone-800 active:bg-stone-700 transition flex items-center justify-between gap-2 text-xs"
+                                                >
+                                                  <span className="text-stone-200 truncate">{opt.name}</span>
+                                                  <span className="text-[10px] text-stone-400 shrink-0 font-mono">
+                                                    {opt.matchedIngredient
+                                                      ? `${opt.matchedIngredient.costPerUnit} ₽/${opt.matchedIngredient.unit}`
+                                                      : opt.unit}
+                                                  </span>
+                                                </button>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </>
+                                      ) : restCatalog.length > 0 ? (
+                                        <div>
+                                          <div className="sticky top-0 bg-stone-950/95 backdrop-blur-sm px-2.5 py-1 text-[10px] font-semibold text-amber-400 uppercase tracking-wider border-b border-stone-800">
+                                            Найдено: {restCatalog.length}
+                                          </div>
+                                          {restCatalog.map(opt => (
+                                            <button
+                                              key={`match-${opt.name.toLowerCase()}`}
+                                              type="button"
+                                              onClick={() => handlePickTtkProduct(opt)}
+                                              className="w-full text-left px-2.5 py-2 hover:bg-stone-800 active:bg-stone-700 transition flex items-center justify-between gap-2 text-xs"
+                                            >
+                                              <span className="text-stone-100 truncate">{opt.name}</span>
+                                              <span className="text-[10px] text-stone-400 shrink-0 font-mono">
+                                                {opt.matchedIngredient
+                                                  ? `${opt.matchedIngredient.costPerUnit} ₽/${opt.matchedIngredient.unit}`
+                                                  : opt.unit}
+                                              </span>
+                                            </button>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <div className="px-3 py-2.5 text-[11px] text-stone-400">
+                                          Новый продукт «<span className="text-stone-200 font-medium">{item.name.trim()}</span>» — сохранится автоматически.
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1.5 sm:contents">
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  placeholder="Вес"
+                                  value={item.quantityInput}
+                                  onFocus={() => {
+                                    if (item.name.trim().length >= 2) {
+                                      recordTtkProducts([{ name: item.name, unit: item.unit }]);
+                                    }
+                                    setActiveProductDropdownIdx(null);
+                                  }}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      if (item.name.trim().length >= 2) {
+                                        recordTtkProducts([{ name: item.name, unit: item.unit }]);
+                                      }
+                                      const nextIdx = editableRecipeItems.length;
+                                      pendingFocusRowRef.current = nextIdx;
+                                      setEditableRecipeItems(prev => [
+                                        ...prev,
+                                        { name: '', quantity: 0, quantityInput: '', unit: item.unit || 'гр' },
+                                      ]);
+                                    }
+                                  }}
+                                  onChange={e => {
+                                    const raw = e.target.value;
+                                    const parsed = parseFloat(raw.replace(',', '.')) || 0;
+                                    setEditableRecipeItems(prev =>
+                                      prev.map((it, i) =>
+                                        i === idx ? { ...it, quantityInput: raw, quantity: parsed } : it
+                                      )
+                                    );
+                                  }}
+                                  className="flex-1 sm:flex-initial w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2 py-1.5 text-xs text-stone-100 text-center outline-none"
+                                />
+                                <select
+                                  value={item.unit}
+                                  onChange={e => {
+                                    const unit = e.target.value as RecipeItemUnit;
+                                    if (item.name.trim().length >= 2) {
+                                      recordTtkProducts([{ name: item.name, unit }]);
+                                    }
+                                    setEditableRecipeItems(prev =>
+                                      prev.map((it, i) => (i === idx ? { ...it, unit } : it))
+                                    );
+                                  }}
+                                  className="w-24 sm:w-full bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-2 py-1.5 text-xs text-stone-100 outline-none"
+                                >
+                                  {RECIPE_ITEM_UNITS.map(u => (
+                                    <option key={u} value={u}>{u}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveProductDropdownIdx(null);
+                                  setEditableRecipeItems(prev => {
+                                    const next = prev.filter((_, i) => i !== idx);
+                                    return next.length > 0
+                                      ? next
+                                      : [{ name: '', quantity: 0, quantityInput: '', unit: 'гр' }];
+                                  });
+                                }}
+                                className="text-stone-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-stone-800 transition justify-self-end sm:justify-self-center"
+                                title="Удалить строку"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditableRecipeItems(prev => {
-                                  const next = prev.filter((_, i) => i !== idx);
-                                  return next.length > 0
-                                    ? next
-                                    : [{ name: '', quantity: 0, quantityInput: '', unit: 'гр' }];
-                                });
-                              }}
-                              className="text-stone-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-stone-800 transition justify-self-end sm:justify-self-center"
-                              title="Удалить строку"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
 
                       <div className="flex items-center justify-between gap-2 pt-0.5">
                         <button
                           type="button"
                           onClick={() => {
+                            const filled = editableRecipeItems.filter(it => it.name.trim().length >= 2);
+                            if (filled.length > 0) recordTtkProducts(filled);
                             const nextIdx = editableRecipeItems.length;
                             pendingFocusRowRef.current = nextIdx;
                             setEditableRecipeItems(prev => [
@@ -4542,7 +4858,7 @@ export default function App() {
                         </button>
                       </div>
                       <p className="text-[10px] text-stone-500">
-                        Совет: нажмите Enter в поле «Вес», чтобы сразу перейти к следующей строке, или используйте «Вставить списком».
+                        Совет: все введённые продукты сохраняются автоматически — при следующем добавлении сначала показываются 3 последних, остальные ниже в списке.
                       </p>
                     </div>
                   ) : (

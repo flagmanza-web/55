@@ -7,8 +7,10 @@ android {
         applicationId "ru.kulinarpro.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        def resolvedVersionCode = (System.getenv("ANDROID_VERSION_CODE") ?: project.findProperty("androidVersionCode") ?: "101").toString().toInteger()
+        def resolvedVersionName = (System.getenv("ANDROID_VERSION_NAME") ?: project.findProperty("androidVersionName") ?: "1.1").toString()
+        versionCode resolvedVersionCode
+        versionName resolvedVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +18,29 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        salatiko {
+            def ksPath = System.getenv("ANDROID_KEYSTORE_PATH") ?: project.findProperty("androidKeystorePath") ?: "salatiko-signing.p12"
+            def ksFile = file(ksPath)
+            if (ksFile.exists()) {
+                storeFile ksFile
+                storeType System.getenv("ANDROID_KEYSTORE_TYPE") ?: "PKCS12"
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "android"
+                keyAlias System.getenv("ANDROID_KEY_ALIAS") ?: "salatiko"
+                keyPassword System.getenv("ANDROID_KEY_PASSWORD") ?: "android"
+            }
+        }
+    }
     buildTypes {
+        debug {
+            if (signingConfigs.salatiko.storeFile != null && signingConfigs.salatiko.storeFile.exists()) {
+                signingConfig signingConfigs.salatiko
+            }
+        }
         release {
+            if (signingConfigs.salatiko.storeFile != null && signingConfigs.salatiko.storeFile.exists()) {
+                signingConfig signingConfigs.salatiko
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
